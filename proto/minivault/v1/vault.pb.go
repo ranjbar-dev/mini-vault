@@ -21,29 +21,28 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type GetKEKRequest struct {
+type GetSecretRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// version specifies which KEK version is requested.
-	// Must match the version embedded in the binary.
-	Version       string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	// name is the key to look up in the secrets map (e.g. "kek", "db_password").
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GetKEKRequest) Reset() {
-	*x = GetKEKRequest{}
+func (x *GetSecretRequest) Reset() {
+	*x = GetSecretRequest{}
 	mi := &file_proto_minivault_v1_vault_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GetKEKRequest) String() string {
+func (x *GetSecretRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GetKEKRequest) ProtoMessage() {}
+func (*GetSecretRequest) ProtoMessage() {}
 
-func (x *GetKEKRequest) ProtoReflect() protoreflect.Message {
+func (x *GetSecretRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_minivault_v1_vault_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -55,43 +54,42 @@ func (x *GetKEKRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetKEKRequest.ProtoReflect.Descriptor instead.
-func (*GetKEKRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use GetSecretRequest.ProtoReflect.Descriptor instead.
+func (*GetSecretRequest) Descriptor() ([]byte, []int) {
 	return file_proto_minivault_v1_vault_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *GetKEKRequest) GetVersion() string {
+func (x *GetSecretRequest) GetName() string {
 	if x != nil {
-		return x.Version
+		return x.Name
 	}
 	return ""
 }
 
-type GetKEKResponse struct {
+type GetSecretResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// kek is the 32-byte raw Key Encryption Key.
-	// Transmitted only over mTLS; never logged.
-	Kek []byte `protobuf:"bytes,1,opt,name=kek,proto3" json:"kek,omitempty"`
-	// version identifies this KEK (e.g. "v1").
-	Version       string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// value is the raw secret value bytes. Never logged.
+	Value []byte `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	// name echoes back the requested key name.
+	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GetKEKResponse) Reset() {
-	*x = GetKEKResponse{}
+func (x *GetSecretResponse) Reset() {
+	*x = GetSecretResponse{}
 	mi := &file_proto_minivault_v1_vault_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GetKEKResponse) String() string {
+func (x *GetSecretResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GetKEKResponse) ProtoMessage() {}
+func (*GetSecretResponse) ProtoMessage() {}
 
-func (x *GetKEKResponse) ProtoReflect() protoreflect.Message {
+func (x *GetSecretResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_minivault_v1_vault_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -103,21 +101,21 @@ func (x *GetKEKResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetKEKResponse.ProtoReflect.Descriptor instead.
-func (*GetKEKResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use GetSecretResponse.ProtoReflect.Descriptor instead.
+func (*GetSecretResponse) Descriptor() ([]byte, []int) {
 	return file_proto_minivault_v1_vault_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *GetKEKResponse) GetKek() []byte {
+func (x *GetSecretResponse) GetValue() []byte {
 	if x != nil {
-		return x.Kek
+		return x.Value
 	}
 	return nil
 }
 
-func (x *GetKEKResponse) GetVersion() string {
+func (x *GetSecretResponse) GetName() string {
 	if x != nil {
-		return x.Version
+		return x.Name
 	}
 	return ""
 }
@@ -159,9 +157,11 @@ func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
 }
 
 type HealthCheckResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	KekLoaded     bool                   `protobuf:"varint,1,opt,name=kek_loaded,json=kekLoaded,proto3" json:"kek_loaded,omitempty"`
-	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// loaded is true when secrets have been successfully decrypted and are in memory.
+	Loaded bool `protobuf:"varint,1,opt,name=loaded,proto3" json:"loaded,omitempty"`
+	// count is the number of secrets currently loaded.
+	Count         int32 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -196,38 +196,24 @@ func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
 	return file_proto_minivault_v1_vault_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *HealthCheckResponse) GetKekLoaded() bool {
+func (x *HealthCheckResponse) GetLoaded() bool {
 	if x != nil {
-		return x.KekLoaded
+		return x.Loaded
 	}
 	return false
 }
 
-func (x *HealthCheckResponse) GetVersion() string {
+func (x *HealthCheckResponse) GetCount() int32 {
 	if x != nil {
-		return x.Version
+		return x.Count
 	}
-	return ""
+	return 0
 }
 
 var File_proto_minivault_v1_vault_proto protoreflect.FileDescriptor
 
 const file_proto_minivault_v1_vault_proto_rawDesc = "" +
-	"\n" +
-	"\x1eproto/minivault/v1/vault.proto\x12\fminivault.v1\")\n" +
-	"\rGetKEKRequest\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\tR\aversion\"<\n" +
-	"\x0eGetKEKResponse\x12\x10\n" +
-	"\x03kek\x18\x01 \x01(\fR\x03kek\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\"\x14\n" +
-	"\x12HealthCheckRequest\"N\n" +
-	"\x13HealthCheckResponse\x12\x1d\n" +
-	"\n" +
-	"kek_loaded\x18\x01 \x01(\bR\tkekLoaded\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion2\xa7\x01\n" +
-	"\fVaultService\x12C\n" +
-	"\x06GetKEK\x12\x1b.minivault.v1.GetKEKRequest\x1a\x1c.minivault.v1.GetKEKResponse\x12R\n" +
-	"\vHealthCheck\x12 .minivault.v1.HealthCheckRequest\x1a!.minivault.v1.HealthCheckResponseB2Z0github.com/yourorg/mini-vault/proto/minivault/v1b\x06proto3"
+	"\n\x1eproto/minivault/v1/vault.proto\x12\fminivault.v1\"&\n\x10GetSecretRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\"=\n\x11GetSecretResponse\x12\x14\n\x05value\x18\x01 \x01(\fR\x05value\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\"\x14\n\x12HealthCheckRequest\"C\n\x13HealthCheckResponse\x12\x16\n\x06loaded\x18\x01 \x01(\bR\x06loaded\x12\x14\n\x05count\x18\x02 \x01(\x05R\x05count2\xb0\x01\n\fVaultService\x12L\n\tGetSecret\x12\x1e.minivault.v1.GetSecretRequest\x1a\x1f.minivault.v1.GetSecretResponse\x12R\n\vHealthCheck\x12 .minivault.v1.HealthCheckRequest\x1a!.minivault.v1.HealthCheckResponseB2Z0github.com/yourorg/mini-vault/proto/minivault/v1b\x06proto3"
 
 var (
 	file_proto_minivault_v1_vault_proto_rawDescOnce sync.Once
@@ -243,15 +229,15 @@ func file_proto_minivault_v1_vault_proto_rawDescGZIP() []byte {
 
 var file_proto_minivault_v1_vault_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_proto_minivault_v1_vault_proto_goTypes = []any{
-	(*GetKEKRequest)(nil),       // 0: minivault.v1.GetKEKRequest
-	(*GetKEKResponse)(nil),      // 1: minivault.v1.GetKEKResponse
+	(*GetSecretRequest)(nil),    // 0: minivault.v1.GetSecretRequest
+	(*GetSecretResponse)(nil),   // 1: minivault.v1.GetSecretResponse
 	(*HealthCheckRequest)(nil),  // 2: minivault.v1.HealthCheckRequest
 	(*HealthCheckResponse)(nil), // 3: minivault.v1.HealthCheckResponse
 }
 var file_proto_minivault_v1_vault_proto_depIdxs = []int32{
-	0, // 0: minivault.v1.VaultService.GetKEK:input_type -> minivault.v1.GetKEKRequest
+	0, // 0: minivault.v1.VaultService.GetSecret:input_type -> minivault.v1.GetSecretRequest
 	2, // 1: minivault.v1.VaultService.HealthCheck:input_type -> minivault.v1.HealthCheckRequest
-	1, // 2: minivault.v1.VaultService.GetKEK:output_type -> minivault.v1.GetKEKResponse
+	1, // 2: minivault.v1.VaultService.GetSecret:output_type -> minivault.v1.GetSecretResponse
 	3, // 3: minivault.v1.VaultService.HealthCheck:output_type -> minivault.v1.HealthCheckResponse
 	2, // [2:4] is the sub-list for method output_type
 	0, // [0:2] is the sub-list for method input_type
@@ -268,7 +254,7 @@ func file_proto_minivault_v1_vault_proto_init() {
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
-			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
+			GoPackagePath: reflect.TypeFor[x]().PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_minivault_v1_vault_proto_rawDesc), len(file_proto_minivault_v1_vault_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   4,

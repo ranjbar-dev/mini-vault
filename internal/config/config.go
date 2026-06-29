@@ -8,7 +8,6 @@ import (
 type Config struct {
 	Port         string
 	ClientCN     string
-	KEKVersion   string
 	RateLimitRPM int
 	LogLevel     string
 }
@@ -21,7 +20,6 @@ func Load() Config {
 	return Config{
 		Port:         getenv("VAULT_PORT", "9000"),
 		ClientCN:     getenv("VAULT_CLIENT_CN", "wallet-signer"),
-		KEKVersion:   getenv("VAULT_KEK_VERSION", "v1"),
 		RateLimitRPM: rpm,
 		LogLevel:     getenv("VAULT_LOG_LEVEL", "info"),
 	}
