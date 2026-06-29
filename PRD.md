@@ -1,18 +1,25 @@
 # Product Requirements Document: `mini-vault`
 
 **Project:** Custodial Crypto Payment Processor  
-**Service:** `mini-vault` — Key Encryption Key (KEK) Distribution Service  
+**Service:** `mini-vault` — Multi-Secret Distribution Service  
 **Language:** Go  
-**Status:** Pre-implementation  
-**Version:** 1.0.0  
+**Status:** v2 — Multi-Secret Store  
+**Version:** 2.0.0  
 
 ---
 
 ## 1. Purpose
 
-`mini-vault` is a standalone, minimal Go microservice whose sole responsibility is to securely hold the Key Encryption Key (KEK) and serve it exclusively to the `wallet-signer` service over mutually authenticated TLS (mTLS). It has no database, no user-facing API, no admin UI, and no functionality beyond authenticated key delivery.
+`mini-vault` is a standalone, minimal Go microservice whose responsibility is to
+securely hold a set of named secrets and serve them to `wallet-signer` over
+mutually authenticated TLS (mTLS) gRPC. Secrets are defined as a JSON file
+before build time, encrypted with a passphrase, and embedded in the binary.
+At runtime the operator enters the passphrase once; thereafter any secret can
+be fetched by name.
 
-It exists as a separate server to establish a physical security boundary: a compromise of the `wallet-signer` server does not automatically expose the KEK, because the KEK never permanently resides on that machine.
+It exists as a separate server to establish a physical security boundary: a
+compromise of the `wallet-signer` server does not expose the secrets, because
+plaintext secrets never reside on that machine.
 
 ---
 
@@ -25,109 +32,145 @@ It exists as a separate server to establish a physical security boundary: a comp
 ┌──────────────────┐  mTLS  ┌───────────────────┐ mTLS ┌─────────────────┐
 │   mini-vault     │───────►│   wallet-signer   │◄─────│   business API  │
 │                  │◄───────│                   │      │                 │
-│  holds KEK in   │  KEK   │  uses KEK to      │      │  sends sign     │
-│  memguard RAM   │        │  decrypt wallet   │      │  requests only  │
-└──────────────────┘        │  private keys     │      └─────────────────┘
-                            └───────────────────┘
+│  secrets map in │  value  │  uses secrets to  │      │  sends sign     │
+│  memguard RAM   │        │  operate wallets  │      │  requests only  │
+└──────────────────┘        └───────────────────┘      └─────────────────┘
 ```
 
 ### 2.2 Threat Model
 
 | Threat | Protection |
 |--------|-----------|
-| Database stolen | KEK not in DB — attacker has only ciphertext |
-| `wallet-signer` server compromised | KEK lives on a separate server; attacker must also compromise `mini-vault` |
+| Database stolen | Secrets not in DB — attacker has only ciphertext |
+| `wallet-signer` server compromised | Secrets live on a separate server |
 | Network interception | mTLS encrypts all traffic; mutual cert auth prevents MITM |
-| `mini-vault` server compromised after startup | KEK is in memguard-protected RAM; no plaintext on disk |
-| `mini-vault` server compromised before startup | Startup passphrase required to unwrap KEK; not stored anywhere |
-| Binary stolen | Wrapped KEK in binary is useless without the startup passphrase |
+| `mini-vault` server compromised after startup | Secrets in memguard-protected RAM; no plaintext on disk |
+| `mini-vault` server compromised before startup | Startup passphrase required to decrypt; not stored anywhere |
+| Binary stolen | `data/secrets.bin` in binary is useless without the startup passphrase |
 | Memory dump of running process | memguard uses locked pages and canaries; reduces but does not eliminate risk |
 
 ### 2.3 What `mini-vault` Does NOT Do
 
-- It does not store wallet keys or mnemonics
-- It does not have a web UI or admin panel
-- It does not connect to any database
-- It does not expose any HTTP endpoint
-- It does not log key material in any form
-- It does not support multiple clients or multi-tenancy
-- It does not implement token-based access, lease TTLs, or audit logs (v1)
+- Does not store wallet keys or mnemonics directly (they are managed by wallet-signer)
+- Does not have a web UI or admin panel
+- Does not connect to any database
+- Does not expose any HTTP endpoint
+- Does not log secret values in any form
+- Does not support runtime secret updates (requires rebuild)
+- Does not implement token-based access, lease TTLs, or audit logs (v2)
 
 ---
 
-## 3. Key Management Design
+## 3. Secret Management Design
 
-### 3.1 Key Hierarchy
+### 3.1 Secret Hierarchy
 
 ```
-Startup Passphrase (typed by single operator at boot)
+Startup Passphrase (typed by operator at boot)
          │
          ▼
     Argon2id (memory: 256MB, iterations: 3, parallelism: 2)
-    + salt embedded in kek.bin
+    + salt embedded in secrets.bin
          │
          ▼
   Unwrapping Key (32 bytes, in memory only, never stored)
          │
-         ▼  AES-256-GCM unwrap
-  Wrapped KEK (stored in binary via go:embed)
+         ▼  AES-256-GCM decrypt
+  Encrypted secrets blob (stored in binary via go:embed)
          │
          ▼
-  KEK (plaintext, in memguard enclave only)
+  Secrets map (map[string]string, in memguard-protected memory)
          │
          ▼  served via mTLS gRPC to wallet-signer
-  wallet-signer uses KEK to decrypt per-wallet DEKs
+  wallet-signer uses secret values to operate
 ```
 
-### 3.2 KEK Generation (Offline, One-Time Setup)
+### 3.2 Secrets Definition (Pre-Build, Offline)
 
-The KEK is generated once offline using a dedicated CLI tool (`vault-keygen`) that is part of this repository but not part of the running service:
+The operator defines secrets in `data/secrets.json` — a plain JSON object
+with string keys and string values:
 
-1. Generate a 256-bit random KEK using `crypto/rand`
-2. Generate a 16-byte random Argon2id salt using `crypto/rand`
-3. Derive a 32-byte unwrapping key via Argon2id (memory: 256MB, iterations: 3, parallelism: 2) from the operator passphrase + salt
-4. Wrap the KEK with AES-256-GCM using the unwrapping key
-5. Write `[version | salt | argon2id params | nonce | ciphertext | tag]` to `keys/kek.bin`
-6. The raw KEK and passphrase are never written to disk
-
-Argon2id parameters are stored inside `kek.bin` so that `mini-vault` can always reconstruct the exact unwrapping key without hardcoding params in the binary. This also allows future `vault-keygen` versions to use stronger parameters without breaking existing binaries.
-
-### 3.3 Key Storage at Rest
-
-The wrapped KEK is embedded into the binary at build time using `go:embed`:
-
-```go
-//go:embed keys/kek.bin
-var wrappedKEK []byte
+```json
+{
+  "kek":          "base64-or-hex-encoded-aes-key",
+  "db_password":  "hunter2",
+  "api_key":      "sk-live-abc123"
+}
 ```
 
-`keys/kek.bin` contains the Argon2id salt, Argon2id parameters, AES-256-GCM nonce, KEK ciphertext, and authentication tag — in that order. It is useless without the operator passphrase. Its binary layout is:
+**`data/secrets.json` must be gitignored.** It is plaintext and must never
+be committed to any repository.
+
+Values are always strings. Binary values (e.g. raw AES keys) must be encoded
+as hex or base64 by the operator before placing them in the JSON. The
+`wallet-signer` is responsible for decoding if needed.
+
+### 3.3 Pre-Build Encryption Step
+
+Before building, the operator runs the `vault-encrypt` CLI on their offline
+workstation to produce `data/secrets.bin`:
 
 ```
-[2 bytes  ] version prefix
+vault-encrypt -in data/secrets.json -out data/secrets.bin
+```
+
+Steps performed by `vault-encrypt`:
+1. Read `data/secrets.json`
+2. Validate that it is a flat `map[string]string` (no nested objects)
+3. Prompt operator for passphrase twice (no echo, must match)
+4. Generate 16-byte random Argon2id salt via `crypto/rand`
+5. Derive 32-byte wrapping key via Argon2id (memory: 256MB, iterations: 3, parallelism: 2)
+6. Generate 12-byte random AES-GCM nonce via `crypto/rand`
+7. Marshal secrets to JSON bytes
+8. Encrypt JSON bytes with AES-256-GCM
+9. Write `data/secrets.bin`: `[version | salt | argon params | nonce | ciphertext+tag]`
+10. Zero all key material in memory before exit
+
+**`data/secrets.bin` may be committed to the private git repo** — it is
+encrypted and safe to store. It is useless without the passphrase.
+
+### 3.4 Encrypted File Format (`secrets.bin`)
+
+```
+[2 bytes  ] version prefix (0x0002)
 [16 bytes ] Argon2id salt       (random, not secret)
 [4 bytes  ] Argon2id memory     (in KB, e.g. 262144 = 256MB)
 [4 bytes  ] Argon2id iterations
 [1 byte   ] Argon2id parallelism
 [12 bytes ] AES-GCM nonce       (random, not secret)
-[32 bytes ] KEK ciphertext
-[16 bytes ] AES-GCM auth tag
+[N bytes  ] AES-GCM ciphertext + 16-byte auth tag
 ─────────────────────────────
- 87 bytes total
+ 39 + N bytes total (variable length)
 ```
 
-### 3.4 Key Storage at Runtime
+Header is exactly 39 bytes. The ciphertext is `json.Marshal(map[string]string)` + 16-byte GCM tag.
+
+### 3.5 go:embed
+
+```go
+//go:embed data/secrets.bin
+var encryptedSecrets []byte
+```
+
+`data/secrets.bin` is embedded at build time. The running binary needs no
+files on disk at runtime.
+
+### 3.6 Runtime Secret Store
 
 After startup passphrase entry:
 
-- The unwrapping key is derived and used to decrypt the KEK
-- The KEK is stored exclusively in a `memguard.LockedBuffer`:
-  - Memory pages are locked against swap (`mlock`)
-  - Pages are encrypted at rest in RAM
-  - Guard pages surround the allocation to catch overreads
-  - The buffer is zeroed automatically on process exit via `defer memguard.Purge()`
-- The unwrapping key and passphrase bytes are zeroed immediately after KEK decryption
-- No plaintext key material ever touches the filesystem or stdout
+- The wrapping key is derived and used to decrypt the secrets blob
+- The decrypted JSON is unmarshalled into `map[string][]byte`
+- The map is protected in memory via a `sync.RWMutex`; individual values
+  are copied out on demand and zeroed by the caller after use
+- The wrapping key and passphrase bytes are zeroed immediately after decryption
+- The AES-GCM plaintext buffer is zeroed after JSON unmarshal
+- No plaintext secret material ever touches the filesystem or stdout
+
+Note: individual secret values in the map are in regular heap memory (not in
+individual memguard buffers), which is an accepted trade-off for simplicity.
+The unwrapping key is stored in a `memguard.LockedBuffer` until decryption
+is complete, then destroyed.
 
 ---
 
@@ -136,9 +179,9 @@ After startup passphrase entry:
 ### 4.1 Transport
 
 - **Protocol:** gRPC over mTLS (TLS 1.3 minimum)
-- **Port:** 9000 (configurable via environment variable)
+- **Port:** 9000 (configurable via `VAULT_PORT`)
 - **Authentication:** Mutual TLS — both client and server must present a valid certificate signed by the shared internal CA
-- **No other ports are opened** — no HTTP, no health check port, no metrics port (v1)
+- **No other ports are opened** — no HTTP, no metrics, no management port
 
 ### 4.2 Certificate Architecture
 
@@ -147,11 +190,6 @@ Internal CA (self-signed, generated offline)
 ├── mini-vault server cert  (used by mini-vault as TLS server)
 └── wallet-signer client cert  (used by wallet-signer as TLS client)
 ```
-
-- The CA private key is generated offline and stored only in cold storage — never on any server
-- The CA certificate is embedded in both binaries via `go:embed`
-- Server and client certs are embedded in their respective binaries
-- Cert rotation requires a new build and deployment
 
 ### 4.3 Proto Definition
 
@@ -163,50 +201,52 @@ package minivault.v1;
 option go_package = "github.com/yourorg/mini-vault/proto/minivault/v1";
 
 service VaultService {
-  // GetKEK returns the active KEK to an authenticated wallet-signer instance.
-  rpc GetKEK(GetKEKRequest) returns (GetKEKResponse);
+  // GetSecret returns a named secret value to an authenticated client.
+  rpc GetSecret(GetSecretRequest) returns (GetSecretResponse);
 
-  // HealthCheck confirms the vault is live and the KEK is loaded.
+  // HealthCheck confirms the vault is live and secrets are loaded.
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
 
-message GetKEKRequest {
-  // version specifies which KEK version is requested.
-  // Must match the version embedded in the binary.
-  string version = 1;
+message GetSecretRequest {
+  // name is the key to look up in the secrets map (e.g. "kek", "db_password").
+  string name = 1;
 }
 
-message GetKEKResponse {
-  // kek is the 32-byte raw Key Encryption Key.
-  // Transmitted only over mTLS; never logged.
-  bytes kek = 1;
+message GetSecretResponse {
+  // value is the raw secret value bytes. Never logged.
+  bytes value = 1;
 
-  // version identifies this KEK (e.g. "v1").
-  string version = 2;
+  // name echoes back the requested key name.
+  string name = 2;
 }
 
 message HealthCheckRequest {}
 
 message HealthCheckResponse {
-  bool kek_loaded = 1;
-  string version  = 2;
+  // loaded is true when secrets have been successfully decrypted and are in memory.
+  bool loaded = 1;
+
+  // count is the number of secrets currently loaded.
+  int32 count = 2;
 }
 ```
 
 ### 4.4 Request Authorization Logic
 
-Even with a valid mTLS client certificate, `mini-vault` applies the following checks before returning the KEK:
+Before returning any secret:
 
-1. **Client cert CN check** — the certificate Common Name must match the configured allowed value (e.g. `wallet-signer`)
-2. **Rate limit** — maximum 5 `GetKEK` calls per 60 seconds per client cert; excess requests are rejected with `RESOURCE_EXHAUSTED`
-3. **Version match** — requested KEK version must match the embedded version string; mismatch returns `INVALID_ARGUMENT`
+1. **Client cert CN check** — the certificate Common Name must match `VAULT_CLIENT_CN` (default: `wallet-signer`); mismatch returns `PERMISSION_DENIED`
+2. **Rate limit** — maximum `VAULT_RATE_LIMIT_RPM` `GetSecret` calls per 60 seconds per client CN; excess returns `RESOURCE_EXHAUSTED`
+3. **Secret existence** — if the requested name does not exist in the map, return `NOT_FOUND`
 
 ### 4.5 What the API Never Does
 
-- Never returns partial key material
-- Never accepts key material from clients
-- Never exposes any endpoint to set, rotate, or delete the KEK at runtime
-- Never logs the KEK in any form — not in debug, not in errors
+- Never returns partial secret material
+- Never accepts secret values from clients
+- Never exposes any endpoint to add, update, or delete secrets at runtime
+- Never logs secret values — not in debug, not in errors
+- Never includes secret values in gRPC error details
 
 ---
 
@@ -214,21 +254,23 @@ Even with a valid mTLS client certificate, `mini-vault` applies the following ch
 
 ```
 1. Process starts
-2. Load wrapped KEK blob from go:embed into memory
-3. Parse kek.bin: extract Argon2id salt + params, nonce, ciphertext, tag
+2. Load encrypted secrets blob from go:embed into memory
+3. Parse secrets.bin: extract Argon2id salt + params, nonce, ciphertext
 4. Prompt operator for passphrase on stdin (no echo, single attempt)
-5. Derive 32-byte unwrapping key via Argon2id using parsed salt + params
+5. Derive 32-byte wrapping key via Argon2id using parsed salt + params
    (uses ~256MB RAM for ~1-2 seconds — one-time cost)
-6. Decrypt KEK ciphertext with AES-256-GCM → load into memguard.LockedBuffer
-7. Zero passphrase bytes, unwrapping key, and all intermediate buffers immediately
-8. Release the 256MB Argon2id working memory back to OS
-9. Load mTLS certs from go:embed into memory
-10. Start gRPC server on configured port
-11. Log "mini-vault ready" (no key material in log)
-12. Serve GetKEK / HealthCheck requests indefinitely
+6. Decrypt ciphertext with AES-256-GCM → JSON bytes
+7. Zero wrapping key and passphrase bytes immediately
+8. Unmarshal JSON → map[string][]byte
+9. Zero the JSON plaintext bytes
+10. Load mTLS certs from go:embed into memory
+11. Start gRPC server on configured port
+12. Log "mini-vault ready" with secret count (no secret names or values in log)
+13. Serve GetSecret / HealthCheck requests indefinitely
 ```
 
-If any step fails (wrong passphrase, decryption error, cert load failure), the process exits immediately with a non-zero code and a generic error message. It does not retry or prompt again — the operator must restart the process.
+If any step fails, the process exits immediately with a non-zero code and a
+generic error message. It does not retry or prompt again.
 
 ---
 
@@ -239,85 +281,77 @@ mini-vault/
 ├── cmd/
 │   ├── mini-vault/
 │   │   └── main.go              # service entrypoint
-│   └── vault-keygen/
-│       └── main.go              # offline KEK generation CLI (not part of running service)
+│   ├── vault-encrypt/
+│   │   └── main.go              # pre-build: encrypts data/secrets.json → data/secrets.bin
+│   └── gentest-secrets/
+│       └── main.go              # dev/CI only: generates a test secrets.bin
 ├── internal/
-│   ├── kek/
-│   │   ├── loader.go            # unwrap KEK from embedded blob + passphrase
-│   │   └── store.go             # memguard-backed KEK store
+│   ├── secrets/
+│   │   └── store.go             # in-memory secrets store (decryption + map)
 │   ├── server/
 │   │   ├── server.go            # gRPC server setup + mTLS config
-│   │   └── handler.go           # GetKEK + HealthCheck handlers
+│   │   └── handler.go           # GetSecret + HealthCheck handlers
 │   ├── ratelimit/
-│   │   └── limiter.go           # per-cert rate limiter
+│   │   └── limiter.go           # per-cert rate limiter (unchanged)
 │   └── config/
 │       └── config.go            # env-based configuration
 ├── proto/
 │   └── minivault/v1/
 │       ├── vault.proto
-│       └── vault.pb.go          # generated
+│       ├── vault.pb.go          # generated
+│       └── vault_grpc.pb.go     # generated
+├── data/
+│   ├── secrets.json             # GITIGNORED — plaintext secrets (edit this)
+│   └── secrets.bin              # committed — AES-256-GCM encrypted blob
 ├── keys/
-│   ├── kek.bin                  # wrapped KEK (go:embed target, gitignored)
-│   ├── ca.crt                   # internal CA cert (go:embed target)
-│   ├── server.crt               # mini-vault server cert (go:embed target)
-│   └── server.key               # mini-vault server key (go:embed target)
-├── embed.go                     # go:embed declarations (single file)
-├── Makefile
-├── Dockerfile                   # minimal scratch/distroless image
-├── .gitignore                   # keys/*.bin, keys/*.key must be gitignored
+│   ├── ca.crt                   # go:embed target
+│   ├── server.crt               # go:embed target
+│   └── server.key               # go:embed target
+├── embed.go                     # go:embed declarations
+├── go.mod
+├── go.sum
 └── README.md
 ```
 
-### 6.1 `embed.go` (single source of truth for embedded files)
-
-```go
-package minivault
-
-import _ "embed"
-
-//go:embed keys/kek.bin
-var WrappedKEK []byte
-
-//go:embed keys/ca.crt
-var CACert []byte
-
-//go:embed keys/server.crt
-var ServerCert []byte
-
-//go:embed keys/server.key
-var ServerKey []byte
-```
+**Removed from v1:**
+- `cmd/vault-keygen/` → replaced by `cmd/vault-encrypt/`
+- `cmd/gentest-kek/` → replaced by `cmd/gentest-secrets/`
+- `internal/kek/` → replaced by `internal/secrets/`
+- `keys/kek.bin` → replaced by `data/secrets.bin`
 
 ---
 
 ## 7. Configuration
 
-All configuration is via environment variables. No config file is read from disk.
+All configuration is via environment variables. No config file.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VAULT_PORT` | `9000` | gRPC listen port |
 | `VAULT_CLIENT_CN` | `wallet-signer` | Expected CN on client cert |
-| `VAULT_KEK_VERSION` | `v1` | KEK version string to match in requests |
-| `VAULT_RATE_LIMIT_RPM` | `5` | Max GetKEK requests per 60s per client |
+| `VAULT_RATE_LIMIT_RPM` | `5` | Max GetSecret calls per 60s per client |
 | `VAULT_LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
 
 ---
 
 ## 8. Logging
 
-- Structured JSON logging via `log/slog` (stdlib, no external dependency)
-- Every `GetKEK` call is logged: timestamp, client cert CN, result (success/denied), reason
-- **Never logged:** KEK bytes, passphrase, unwrapping key, any key material
-- **Never logged:** full TLS handshake details beyond cert CN
+- Structured JSON logging via `log/slog`
+- Every `GetSecret` call is logged: timestamp, client CN, secret name, result
+- **Never logged:** secret values, passphrase, wrapping key, any key material
+- **Never logged:** secret names that do not exist (to avoid confirming their absence to log readers)
 
 Example log lines:
 ```json
-{"time":"2026-06-29T10:00:00Z","level":"INFO","msg":"mini-vault ready","kek_version":"v1","port":9000}
-{"time":"2026-06-29T10:01:23Z","level":"INFO","msg":"kek_served","client_cn":"wallet-signer","version":"v1"}
-{"time":"2026-06-29T10:01:25Z","level":"WARN","msg":"kek_denied","client_cn":"unknown","reason":"cert_cn_mismatch"}
-{"time":"2026-06-29T10:01:26Z","level":"WARN","msg":"kek_denied","client_cn":"wallet-signer","reason":"rate_limit_exceeded"}
+{"time":"...","level":"INFO","msg":"mini-vault ready","secrets_count":3,"port":"9000"}
+{"time":"...","level":"INFO","msg":"secret_served","client_cn":"wallet-signer","name":"kek"}
+{"time":"...","level":"WARN","msg":"secret_denied","client_cn":"unknown","reason":"cert_cn_mismatch"}
+{"time":"...","level":"WARN","msg":"secret_denied","client_cn":"wallet-signer","reason":"rate_limit_exceeded"}
+{"time":"...","level":"WARN","msg":"secret_not_found","client_cn":"wallet-signer"}
 ```
+
+Note: `secret_not_found` does NOT log the requested name to avoid leaking which
+names exist. It logs only the client CN.
 
 ---
 
@@ -326,44 +360,100 @@ Example log lines:
 | Condition | Behavior |
 |-----------|----------|
 | Wrong passphrase at startup | Exit immediately, generic error, no retry |
-| KEK decryption failure | Exit immediately |
-| Client cert CN mismatch | Return gRPC `PERMISSION_DENIED`, log warning |
-| Rate limit exceeded | Return gRPC `RESOURCE_EXHAUSTED`, log warning |
-| KEK version mismatch | Return gRPC `INVALID_ARGUMENT` |
-| Internal error during key read | Return gRPC `INTERNAL`, never include key material in error message |
-| Graceful shutdown signal (SIGTERM) | Zero memguard buffers, call `memguard.Purge()`, exit 0 |
+| Decryption failure | Exit immediately |
+| JSON unmarshal failure | Exit immediately |
+| Client cert CN mismatch | `PERMISSION_DENIED`, log warning |
+| Rate limit exceeded | `RESOURCE_EXHAUSTED`, log warning |
+| Secret name not found | `NOT_FOUND`, log warning (no name in log) |
+| Internal error | `INTERNAL`, never include secret values in message |
+| SIGTERM | Zero all in-memory secret values, call `memguard.Purge()`, exit 0 |
 
 ---
 
-## 10. Security Hardening (Deployment)
+## 10. `vault-encrypt` CLI (Pre-Build Tool)
 
-These are deployment requirements, not code requirements, but they are mandatory for the security model to hold.
+```
+Usage:
+  vault-encrypt -in data/secrets.json -out data/secrets.bin
 
-### 10.1 OS-level
+Steps:
+  1. Read and validate data/secrets.json (must be flat map[string]string)
+  2. Prompt operator for passphrase twice (no echo, must match)
+  3. Generate random salt + nonce via crypto/rand
+  4. Derive wrapping key via Argon2id (256MB, 3 iterations, 2 parallelism)
+  5. Encrypt JSON with AES-256-GCM
+  6. Write secrets.bin: [version | salt | params | nonce | ciphertext+tag]
+  7. Zero all key material before exit
+
+Output:
+  data/secrets.bin  → safe to commit to private repo (encrypted)
+```
+
+---
+
+## 11. `gentest-secrets` CLI (Dev/CI Only)
+
+```
+Usage:
+  go run ./cmd/gentest-secrets
+
+Steps:
+  1. Write a hardcoded data/secrets.json with test values
+  2. Encrypt it with passphrase "test-passphrase-change-before-production"
+  3. Write data/secrets.bin
+
+NOT for production. The passphrase and secret values are hardcoded and public.
+```
+
+---
+
+## 12. Proto Regeneration
+
+The proto-generated files (`vault.pb.go`, `vault_grpc.pb.go`) must be
+regenerated after changing `vault.proto`. The new service replaces `GetKEK`
+with `GetSecret` and updates message types accordingly.
+
+Required tool versions (pin in CI):
+- `protoc` v6.33.0
+- `protoc-gen-go` v1.36.10
+- `protoc-gen-go-grpc` v1.5.1
+
+Regeneration command:
+```sh
+protoc --go_out=. --go_opt=paths=source_relative \
+       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+       proto/minivault/v1/vault.proto
+```
+
+---
+
+## 13. Security Hardening (Deployment)
+
+### 13.1 OS-level
 
 - Run as a dedicated non-root user (`vault-svc`)
 - `ulimit -c 0` — disable core dumps
-- `/proc/sys/kernel/yama/ptrace_scope` set to `1` or higher — prevent ptrace by non-root
-- No swap (`swapoff -a`) — prevents memguard-protected pages from being paged to disk
+- `/proc/sys/kernel/yama/ptrace_scope` set to `1` or higher
+- No swap (`swapoff -a`)
 
-### 10.2 Network
+### 13.2 Network
 
-- Firewall allows **only** inbound TCP on port 9000 from the `wallet-signer` server's IP
+- Firewall allows **only** inbound TCP 9000 from the `wallet-signer` server IP
 - No outbound connections required or permitted
-- No SSH from the internet — bastion host only
-- No other services run on this server
 
-### 10.3 Systemd Unit
+### 13.3 Systemd Unit
 
 ```ini
 [Unit]
-Description=mini-vault KEK service
+Description=mini-vault secret distribution service
 After=network.target
 
 [Service]
 Type=simple
 User=vault-svc
 ExecStart=/usr/local/bin/mini-vault
+StandardInput=tty
+TTYPath=/dev/tty
 Restart=no
 LimitCORE=0
 LimitMEMLOCK=infinity
@@ -376,149 +466,77 @@ PrivateDevices=true
 WantedBy=multi-user.target
 ```
 
-Note: `Restart=no` is intentional. If the process crashes, an operator must manually restart and re-enter the passphrase. Automatic restart would accept the old passphrase from a cached source, which defeats the protection.
+### 13.4 Build
 
-### 10.4 Build
-
-- Builds must be reproducible (pinned Go toolchain version, pinned dependencies via `go.sum`)
-- `keys/kek.bin` and `keys/*.key` are gitignored and delivered to the build environment via a secure out-of-band channel
-- The binary is stripped (`-ldflags="-s -w"`) to reduce symbol information
-
----
-
-## 11. Dependencies
-
-Kept deliberately minimal.
-
-| Package | Purpose | Justification |
-|---------|---------|---------------|
-| `github.com/awnumar/memguard` | Secure RAM storage for KEK | Locked pages, guard canaries, auto-wipe |
-| `google.golang.org/grpc` | gRPC server | Transport layer |
-| `google.golang.org/protobuf` | Proto serialization | Required by gRPC |
-| `golang.org/x/crypto` | Argon2id + AES-256-GCM | Key derivation and unwrapping |
-| stdlib only for everything else | — | Logging (slog), TLS, rate limiting, `crypto/rand` |
-
-No web framework. No ORM. No external secret manager.
-
----
-
-## 12. `vault-keygen` CLI (Offline Tool)
-
-This tool is used once by the operator to generate the wrapped KEK. It is never deployed to any server. It must be run on the operator's own machine (laptop or offline workstation), not on any server.
-
-```
-Usage:
-  vault-keygen generate --out keys/kek.bin --version v1
-
-Steps:
-  1. Prompts operator for passphrase on stdin (twice, must match, no echo)
-  2. Generates 16-byte random Argon2id salt via crypto/rand
-  3. Derives 32-byte unwrapping key via Argon2id
-     (memory: 256MB, iterations: 3, parallelism: 2)
-  4. Generates 32-byte random KEK via crypto/rand
-  5. Wraps KEK with AES-256-GCM using the unwrapping key
-  6. Writes kek.bin: [version | salt | params | nonce | ciphertext | tag]
-  7. Prints KEK hex to stdout ONCE with a clear warning to record it securely
-  8. Zeroes all key material in memory before exit
-
-Output:
-  keys/kek.bin  → commit to private git repo (already encrypted, safe to store)
-  KEK hex       → printed once to stdout; operator writes it down and stores
-                  in a physically secure location (e.g. safe or sealed envelope)
-                  This is only needed for wallet-signer's first bootstrap and
-                  can be destroyed afterwards once all DEKs are in the database.
+```sh
+go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault
 ```
 
-### 12.1 Passphrase Custody
+---
 
-The startup passphrase is held by a **single designated operator**. There is no splitting or distribution. The operator is responsible for:
+## 14. Dependencies
 
-- Memorising the passphrase or storing it in a personal password manager
-- Being available to type it whenever `mini-vault` is restarted
-- Never storing it in plaintext on any networked machine
-- Keeping it strictly separate from the `kek.bin` backup
-
-The accepted risk of single-person custody is: if the operator is permanently unavailable and the passphrase is lost, the KEK cannot be recovered from `kek.bin`. In that scenario the `kek.bin` must be regenerated, a new KEK produced, and all wallet private keys re-encrypted with the new KEK — a recovery procedure requiring access to the database.
+| Package | Purpose |
+|---------|---------|
+| `github.com/awnumar/memguard` | Locked RAM for wrapping key during decryption |
+| `google.golang.org/grpc` | gRPC server |
+| `google.golang.org/protobuf` | Proto serialization |
+| `golang.org/x/crypto` | Argon2id key derivation |
+| stdlib only for everything else | slog, crypto/aes, crypto/cipher, crypto/rand, encoding/json |
 
 ---
 
-## 13. Acceptance Criteria
+## 15. Acceptance Criteria
 
 ### Functional
 
-- [ ] Service starts only after correct passphrase entry; wrong passphrase causes immediate exit
-- [ ] `GetKEK` returns correct 32-byte KEK to a valid mTLS client
-- [ ] `GetKEK` returns `PERMISSION_DENIED` to a client with an unrecognized cert CN
-- [ ] `GetKEK` returns `RESOURCE_EXHAUSTED` after exceeding rate limit
-- [ ] `HealthCheck` returns `kek_loaded: true` after successful startup
-- [ ] Process exits cleanly on SIGTERM, zeroing all memguard buffers
+- [ ] Service decrypts secrets on startup with correct passphrase; wrong passphrase → immediate exit
+- [ ] `GetSecret("kek")` returns the value defined in `data/secrets.json`
+- [ ] `GetSecret("db_password")` returns the value defined in `data/secrets.json`
+- [ ] `GetSecret("nonexistent")` returns `NOT_FOUND`
+- [ ] `GetSecret` returns `PERMISSION_DENIED` for wrong client cert CN
+- [ ] `GetSecret` returns `RESOURCE_EXHAUSTED` after exceeding rate limit
+- [ ] `HealthCheck` returns `loaded: true` and correct `count` after startup
+- [ ] Process exits cleanly on SIGTERM, zeroing secret values from memory
 
 ### Security
 
-- [ ] No key material appears in any log line under any log level
-- [ ] No key material appears in any gRPC error message or status detail
-- [ ] `keys/kek.bin` and `keys/*.key` are absent from git history
-- [ ] Core dumps are disabled and verified (`ulimit -c` returns 0)
-- [ ] Only port 9000 is open; verified with `ss -tlnp`
-- [ ] Client connections without a valid CA-signed cert are rejected at TLS handshake
-- [ ] Connections from a cert with wrong CN are rejected after handshake with `PERMISSION_DENIED`
-
-### Operational
-
-- [ ] Service can be built reproducibly from source + embedded key files
-- [ ] `vault-keygen` produces a valid `kek.bin` that `mini-vault` can unwrap
-- [ ] Systemd unit starts, stops, and does not auto-restart correctly
-- [ ] Disaster recovery procedure tested: destroy server → rebuild from git + kek.bin + passphrase → confirm same KEK is served
+- [ ] No secret values in any log line at any log level
+- [ ] No secret values in any gRPC error message
+- [ ] `data/secrets.json` is gitignored
+- [ ] `data/secrets.bin` is committed (encrypted, safe to store)
+- [ ] Core dumps disabled (`LimitCORE=0`)
+- [ ] Only port 9000 open
+- [ ] Connections without valid CA-signed cert rejected at TLS handshake
 
 ---
 
-## 14. Disaster Recovery Procedure
+## 16. Disaster Recovery
 
-If the `mini-vault` server is destroyed or lost, the recovery procedure is:
+**Required materials:**
+1. Source code → private git repo (contains `data/secrets.bin`)
+2. Passphrase → operator memory / password manager
+3. TLS certs → git repo (`ca.crt`, `server.crt`, `server.key`)
 
-```
-Required materials:
-  1. Source code        → clone from private git repo (contains kek.bin already)
-  2. Passphrase         → provided by the operator from memory / password manager
-  3. TLS certs          → stored in git repo (ca.crt, server.crt, server.key)
+**Recovery steps:**
+1. Provision new server
+2. Clone private git repo
+3. `go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault`
+4. Deploy binary, start, enter passphrase
+5. Verify `HealthCheck` returns `loaded: true`
 
-Recovery steps:
-  1. Provision a new server (same firewall rules, same OS hardening)
-  2. Clone the private git repo
-  3. Build the binary:  make build
-  4. Deploy binary to new server
-  5. Start mini-vault, enter passphrase when prompted
-  6. Verify HealthCheck returns kek_loaded: true
-  7. Verify wallet-signer can fetch KEK successfully
-  8. Update firewall rules if the new server has a different IP
-```
-
-Because `kek.bin` is committed to the private git repo (it is already encrypted and safe to store there), and TLS certs are also in the repo, a full server rebuild requires only the operator's passphrase and git access. No other out-of-band material is needed.
-
-**What cannot be recovered without the passphrase:** if the passphrase is permanently lost, `kek.bin` cannot be decrypted. In this case a new KEK must be generated, and all wallet private keys in the database must be re-encrypted under the new KEK. This is a serious operational event requiring database-level access and coordination with the `wallet-signer` team.
+**If the passphrase is lost:** `data/secrets.bin` cannot be decrypted. The
+operator must edit `data/secrets.json` with the original values (recovered
+from other secure storage), re-run `vault-encrypt`, rebuild, and redeploy.
 
 ---
 
-## 15. Out of Scope (v1)
+## 17. Out of Scope (v2)
 
-These are explicitly deferred and must not be built into v1:
-
-- KEK rotation without a binary rebuild
-- Multiple KEK versions active simultaneously
+- Runtime secret updates without rebuild
+- Per-secret access control (all secrets accessible to `VAULT_CLIENT_CN`)
 - Audit log to external storage
-- TOTP / hardware token second factor at startup
-- Multiple allowed clients / multi-tenant access
-- Metrics endpoint (Prometheus etc.)
+- Multiple allowed clients
+- Metrics endpoint
 - Automatic cert rotation
-- HA / multi-instance mini-vault
-
----
-
-## 16. Open Questions
-
-| # | Question | Owner | Status |
-|---|----------|-------|--------|
-| 1 | Argon2id vs PBKDF2 for passphrase KDF | Amir | ✅ Resolved — Argon2id (256MB, 3 iterations, 2 parallelism) |
-| 2 | Who holds the startup passphrase? | Amir | ✅ Resolved — single operator; no splitting |
-| 3 | Recovery procedure if mini-vault server is destroyed | Amir | ✅ Resolved — rebuild from git + passphrase; see §14 |
-| 4 | Backup strategy for kek.bin | Amir | ✅ Resolved — committed to private git repo (already encrypted) |
+- HA / multi-instance
