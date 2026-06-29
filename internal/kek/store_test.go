@@ -104,3 +104,19 @@ func TestKekStoreBadLength(t *testing.T) {
 		t.Fatal("expected error on bad length")
 	}
 }
+
+func TestKekStoreDestroyIdempotent(t *testing.T) {
+	kekPlain := make([]byte, 32)
+	rand.Read(kekPlain) //nolint:errcheck
+
+	wrapped, err := buildKekBin([]byte("pass"), kekPlain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewKekStore(wrapped, []byte("pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Destroy()
+	store.Destroy() // must not panic
+}

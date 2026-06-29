@@ -46,13 +46,14 @@ func (h *Handler) GetKEK(ctx context.Context, req *pb.GetKEKRequest) (*pb.GetKEK
 	}
 
 	if req.Version != h.kekVersion {
+		slog.Warn("kek_denied", "client_cn", cn, "reason", "version_mismatch", "requested", req.Version)
 		return nil, status.Error(codes.InvalidArgument, "unknown version")
 	}
 
 	kekBytes := h.store.Get()
 	defer kek.ZeroBytes(kekBytes)
 
-	// copy into response (protobuf will hold it; we zero our local slice)
+	// copy into response — kekBytes is zeroed by defer; resp.Kek is a separate slice
 	resp := &pb.GetKEKResponse{
 		Kek:     append([]byte(nil), kekBytes...),
 		Version: h.kekVersion,

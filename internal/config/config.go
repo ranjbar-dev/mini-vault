@@ -6,11 +6,11 @@ import (
 )
 
 type Config struct {
-	Port           string
-	ClientCN       string
-	KEKVersion     string
-	RateLimitRPM   int
-	LogLevel       string
+	Port         string
+	ClientCN     string
+	KEKVersion   string
+	RateLimitRPM int
+	LogLevel     string
 }
 
 func Load() Config {

@@ -1,3 +1,5 @@
+// vault-keygen: offline KEK generation tool.
+// Run once on an offline workstation — never on a server.
 package main
 
 import (
@@ -24,7 +26,6 @@ const (
 
 func main() {
 	out := flag.String("out", "keys/kek.bin", "path to write kek.bin")
-	_ = flag.String("version", "v1", "KEK version label")
 	flag.Parse()
 
 	fmt.Fprint(os.Stderr, "Enter passphrase: ")
@@ -90,10 +91,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Seal returns ciphertext || tag
+	// Seal returns ciphertext || tag (32 + 16 = 48 bytes)
 	sealed := gcm.Seal(nil, nonce, kekPlain, nil)
 
-	// build the 87-byte blob
 	var buf [kekBinLen]byte
 	off := 0
 	binary.BigEndian.PutUint16(buf[off:], version1)
@@ -108,8 +108,7 @@ func main() {
 	off++
 	copy(buf[off:], nonce)
 	off += 12
-	copy(buf[off:], sealed) // 48 bytes: 32 ciphertext + 16 tag
-	off += 48
+	copy(buf[off:], sealed)
 	_ = off // == 87
 
 	if err := os.WriteFile(*out, buf[:], 0600); err != nil {
@@ -137,6 +136,7 @@ func zero(b []byte) {
 	}
 }
 
+// equal is constant-time byte comparison to prevent timing side-channels.
 func equal(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

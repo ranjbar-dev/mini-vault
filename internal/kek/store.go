@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"errors"
+	"sync"
 
 	"github.com/awnumar/memguard"
 	"golang.org/x/crypto/argon2"
@@ -16,7 +17,9 @@ const (
 )
 
 // KekStore holds the plaintext KEK in a memguard-protected buffer.
+// All methods are safe for concurrent use.
 type KekStore struct {
+	mu     sync.RWMutex
 	buf    *memguard.LockedBuffer
 	loaded bool
 }
@@ -48,7 +51,6 @@ func NewKekStore(wrapped []byte, passphrase []byte) (*KekStore, error) {
 	off++
 	nonce := wrapped[off : off+12]
 	off += 12
-	// ciphertext (32 bytes) || tag (16 bytes) as produced by GCM Seal
 	ciphertextAndTag := wrapped[off : off+48]
 
 	unwrap := argon2.IDKey(passphrase, salt, iters, memKB, threads, 32)
@@ -76,6 +78,8 @@ func NewKekStore(wrapped []byte, passphrase []byte) (*KekStore, error) {
 
 // Get returns a copy of the KEK bytes. The caller must zero the returned slice after use.
 func (s *KekStore) Get() []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	src := s.buf.Bytes()
 	dst := make([]byte, len(src))
 	copy(dst, src)
@@ -84,11 +88,18 @@ func (s *KekStore) Get() []byte {
 
 // IsLoaded reports whether the KEK is held in memory.
 func (s *KekStore) IsLoaded() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.loaded
 }
 
-// Destroy wipes the KEK buffer.
+// Destroy wipes the KEK buffer. Safe to call more than once.
 func (s *KekStore) Destroy() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.loaded {
+		return
+	}
 	s.loaded = false
 	s.buf.Destroy()
 }
