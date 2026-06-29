@@ -23,12 +23,18 @@ func main() {
 	cfg := config.Load()
 	setupLogger(cfg.LogLevel)
 
-	fmt.Fprint(os.Stderr, "Enter passphrase: ")
-	passphrase, err := secrets.ReadPassphrase()
-	fmt.Fprintln(os.Stderr)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to initialise vault")
-		os.Exit(1)
+	var passphrase []byte
+	if p := os.Getenv("VAULT_PASSPHRASE"); p != "" {
+		passphrase = []byte(p)
+	} else {
+		fmt.Fprint(os.Stderr, "Enter passphrase: ")
+		var err error
+		passphrase, err = secrets.ReadPassphrase()
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "failed to initialise vault")
+			os.Exit(1)
+		}
 	}
 
 	store, err := secrets.NewStore(minivault.EncryptedSecrets, passphrase)

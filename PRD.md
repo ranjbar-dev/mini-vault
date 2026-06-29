@@ -11,15 +11,15 @@
 ## 1. Purpose
 
 `mini-vault` is a standalone, minimal Go microservice whose responsibility is to
-securely hold a set of named secrets and serve them to `wallet-signer` over
+securely hold a set of named secrets and serve them to authenticated clients over
 mutually authenticated TLS (mTLS) gRPC. Secrets are defined as a JSON file
 before build time, encrypted with a passphrase, and embedded in the binary.
 At runtime the operator enters the passphrase once; thereafter any secret can
 be fetched by name.
 
 It exists as a separate server to establish a physical security boundary: a
-compromise of the `wallet-signer` server does not expose the secrets, because
-plaintext secrets never reside on that machine.
+compromise of a consumer server does not expose the secrets, because plaintext
+secrets never reside on that machine.
 
 ---
 
@@ -28,13 +28,13 @@ plaintext secrets never reside on that machine.
 ### 2.1 Role in the Larger System
 
 ```
-[mini-vault server]          [signer server]           [api server]
-┌──────────────────┐  mTLS  ┌───────────────────┐ mTLS ┌─────────────────┐
-│   mini-vault     │───────►│   wallet-signer   │◄─────│   business API  │
-│                  │◄───────│                   │      │                 │
-│  secrets map in │  value  │  uses secrets to  │      │  sends sign     │
-│  memguard RAM   │        │  operate wallets  │      │  requests only  │
-└──────────────────┘        └───────────────────┘      └─────────────────┘
+[mini-vault server]           [consumer service(s)]
+┌───────────────────┐  mTLS  ┌────────────────────┐
+│   mini-vault      │───────►│   your-service     │
+│                   │◄───────│                    │
+│  secrets map in  │  value  │  uses secret to    │
+│  heap RAM        │        │  connect/sign/auth │
+└───────────────────┘        └────────────────────┘
 ```
 
 ### 2.2 Threat Model
@@ -44,14 +44,13 @@ plaintext secrets never reside on that machine.
 | Database stolen | Secrets not in DB — attacker has only ciphertext |
 | `wallet-signer` server compromised | Secrets live on a separate server |
 | Network interception | mTLS encrypts all traffic; mutual cert auth prevents MITM |
-| `mini-vault` server compromised after startup | Secrets in memguard-protected RAM; no plaintext on disk |
-| `mini-vault` server compromised before startup | Startup passphrase required to decrypt; not stored anywhere |
+| `mini-vault` server compromised after startup | Secrets in heap RAM protected by RWMutex; no plaintext on disk |
+| `mini-vault` server compromised before startup | Startup passphrase required to decrypt; not stored on disk |
 | Binary stolen | `data/secrets.bin` in binary is useless without the startup passphrase |
 | Memory dump of running process | memguard uses locked pages and canaries; reduces but does not eliminate risk |
 
 ### 2.3 What `mini-vault` Does NOT Do
 
-- Does not store wallet keys or mnemonics directly (they are managed by wallet-signer)
 - Does not have a web UI or admin panel
 - Does not connect to any database
 - Does not expose any HTTP endpoint
@@ -188,7 +187,7 @@ is complete, then destroyed.
 ```
 Internal CA (self-signed, generated offline)
 ├── mini-vault server cert  (used by mini-vault as TLS server)
-└── wallet-signer client cert  (used by wallet-signer as TLS client)
+└── client cert             (one per consumer application, CN must match VAULT_CLIENT_CN)
 ```
 
 ### 4.3 Proto Definition
@@ -236,7 +235,7 @@ message HealthCheckResponse {
 
 Before returning any secret:
 
-1. **Client cert CN check** — the certificate Common Name must match `VAULT_CLIENT_CN` (default: `wallet-signer`); mismatch returns `PERMISSION_DENIED`
+1. **Client cert CN check** — the certificate Common Name must match `VAULT_CLIENT_CN` (default: `vault-client`); mismatch returns `PERMISSION_DENIED`
 2. **Rate limit** — maximum `VAULT_RATE_LIMIT_RPM` `GetSecret` calls per 60 seconds per client CN; excess returns `RESOURCE_EXHAUSTED`
 3. **Secret existence** — if the requested name does not exist in the map, return `NOT_FOUND`
 
@@ -327,8 +326,9 @@ All configuration is via environment variables. No config file.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `VAULT_PASSPHRASE` | *(empty)* | Passphrase to decrypt `secrets.bin`. If unset, prompted interactively on stdin. |
 | `VAULT_PORT` | `9000` | gRPC listen port |
-| `VAULT_CLIENT_CN` | `wallet-signer` | Expected CN on client cert |
+| `VAULT_CLIENT_CN` | `vault-client` | Expected CN on client cert |
 | `VAULT_RATE_LIMIT_RPM` | `5` | Max GetSecret calls per 60s per client |
 | `VAULT_LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
 
@@ -344,10 +344,10 @@ All configuration is via environment variables. No config file.
 Example log lines:
 ```json
 {"time":"...","level":"INFO","msg":"mini-vault ready","secrets_count":3,"port":"9000"}
-{"time":"...","level":"INFO","msg":"secret_served","client_cn":"wallet-signer","name":"kek"}
+{"time":"...","level":"INFO","msg":"secret_served","client_cn":"vault-client","name":"db_password"}
 {"time":"...","level":"WARN","msg":"secret_denied","client_cn":"unknown","reason":"cert_cn_mismatch"}
-{"time":"...","level":"WARN","msg":"secret_denied","client_cn":"wallet-signer","reason":"rate_limit_exceeded"}
-{"time":"...","level":"WARN","msg":"secret_not_found","client_cn":"wallet-signer"}
+{"time":"...","level":"WARN","msg":"secret_denied","client_cn":"vault-client","reason":"rate_limit_exceeded"}
+{"time":"...","level":"WARN","msg":"secret_not_found","client_cn":"vault-client"}
 ```
 
 Note: `secret_not_found` does NOT log the requested name to avoid leaking which
@@ -519,15 +519,16 @@ go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault
 3. TLS certs → git repo (`ca.crt`, `server.crt`, `server.key`)
 
 **Recovery steps:**
-1. Provision new server
+1. Provision new server with same firewall rules
 2. Clone private git repo
 3. `go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault`
-4. Deploy binary, start, enter passphrase
+4. Deploy binary; start; enter passphrase (or set `VAULT_PASSPHRASE`)
 5. Verify `HealthCheck` returns `loaded: true`
+6. Update firewall rules if server IP changed
 
-**If the passphrase is lost:** `data/secrets.bin` cannot be decrypted. The
-operator must edit `data/secrets.json` with the original values (recovered
-from other secure storage), re-run `vault-encrypt`, rebuild, and redeploy.
+**If the passphrase is lost:** `data/secrets.bin` cannot be decrypted. Edit
+`data/secrets.json` with the original values (from other secure storage),
+re-run `vault-encrypt`, rebuild, and redeploy.
 
 ---
 

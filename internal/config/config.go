@@ -19,7 +19,7 @@ func Load() Config {
 	}
 	return Config{
 		Port:         getenv("VAULT_PORT", "9000"),
-		ClientCN:     getenv("VAULT_CLIENT_CN", "wallet-signer"),
+		ClientCN:     getenv("VAULT_CLIENT_CN", "vault-client"),
 		RateLimitRPM: rpm,
 		LogLevel:     getenv("VAULT_LOG_LEVEL", "info"),
 	}
