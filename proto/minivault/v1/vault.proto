@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package minivault.v1;
+
+option go_package = "github.com/yourorg/mini-vault/proto/minivault/v1";
+
+service VaultService {
+  // GetKEK returns the active KEK to an authenticated wallet-signer instance.
+  rpc GetKEK(GetKEKRequest) returns (GetKEKResponse);
+
+  // HealthCheck confirms the vault is live and the KEK is loaded.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message GetKEKRequest {
+  // version specifies which KEK version is requested.
+  // Must match the version embedded in the binary.
+  string version = 1;
+}
+
+message GetKEKResponse {
+  // kek is the 32-byte raw Key Encryption Key.
+  // Transmitted only over mTLS; never logged.
+  bytes kek = 1;
+
+  // version identifies this KEK (e.g. "v1").
+  string version = 2;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool kek_loaded = 1;
+  string version  = 2;
+}

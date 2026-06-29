@@ -1,0 +1,18 @@
+[Unit]
+Description=mini-vault KEK service
+After=network.target
+
+[Service]
+Type=simple
+User=vault-svc
+ExecStart=/usr/local/bin/mini-vault
+Restart=no
+LimitCORE=0
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

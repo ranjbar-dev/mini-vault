@@ -1,0 +1,6 @@
+bin/
+keys/*.key
+keys/*.pem
+keys/*.csr
+keys/*.srl
+# kek.bin is intentionally committed — do NOT add it here
