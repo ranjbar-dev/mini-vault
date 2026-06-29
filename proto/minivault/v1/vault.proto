@@ -5,31 +5,32 @@ package minivault.v1;
 option go_package = "github.com/yourorg/mini-vault/proto/minivault/v1";
 
 service VaultService {
-  // GetKEK returns the active KEK to an authenticated wallet-signer instance.
-  rpc GetKEK(GetKEKRequest) returns (GetKEKResponse);
+  // GetSecret returns a named secret value to an authenticated client.
+  rpc GetSecret(GetSecretRequest) returns (GetSecretResponse);
 
-  // HealthCheck confirms the vault is live and the KEK is loaded.
+  // HealthCheck confirms the vault is live and secrets are loaded.
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
 
-message GetKEKRequest {
-  // version specifies which KEK version is requested.
-  // Must match the version embedded in the binary.
-  string version = 1;
+message GetSecretRequest {
+  // name is the key to look up in the secrets map (e.g. "kek", "db_password").
+  string name = 1;
 }
 
-message GetKEKResponse {
-  // kek is the 32-byte raw Key Encryption Key.
-  // Transmitted only over mTLS; never logged.
-  bytes kek = 1;
+message GetSecretResponse {
+  // value is the raw secret value bytes. Never logged.
+  bytes value = 1;
 
-  // version identifies this KEK (e.g. "v1").
-  string version = 2;
+  // name echoes back the requested key name.
+  string name = 2;
 }
 
 message HealthCheckRequest {}
 
 message HealthCheckResponse {
-  bool kek_loaded = 1;
-  string version  = 2;
+  // loaded is true when secrets have been successfully decrypted and are in memory.
+  bool loaded = 1;
+
+  // count is the number of secrets currently loaded.
+  int32 count = 2;
 }

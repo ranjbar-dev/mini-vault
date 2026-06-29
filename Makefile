@@ -1,4 +1,4 @@
-.PHONY: proto build keygen lint test
+.PHONY: proto build encrypt gentest lint test
 
 PROTO_DIR := proto/minivault/v1
 
@@ -8,11 +8,14 @@ proto:
 	       $(PROTO_DIR)/vault.proto
 
 build:
-	go build -ldflags="-s -w" -o bin/mini-vault    ./cmd/mini-vault
-	go build -ldflags="-s -w" -o bin/vault-keygen  ./cmd/vault-keygen
+	go build -ldflags="-s -w" -o bin/mini-vault      ./cmd/mini-vault
+	go build -ldflags="-s -w" -o bin/vault-encrypt   ./cmd/vault-encrypt
 
-keygen:
-	go run ./cmd/vault-keygen
+encrypt:
+	go run ./cmd/vault-encrypt
+
+gentest:
+	go run ./cmd/gentest-secrets
 
 lint:
 	golangci-lint run

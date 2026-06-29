@@ -10,63 +10,60 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	"github.com/yourorg/mini-vault/internal/kek"
 	"github.com/yourorg/mini-vault/internal/ratelimit"
+	"github.com/yourorg/mini-vault/internal/secrets"
 	pb "github.com/yourorg/mini-vault/proto/minivault/v1"
 )
 
 // Handler implements pb.VaultServiceServer.
 type Handler struct {
 	pb.UnimplementedVaultServiceServer
-	store      *kek.KekStore
-	limiter    *ratelimit.Limiter
-	allowedCN  string
-	kekVersion string
+	store     *secrets.Store
+	limiter   *ratelimit.Limiter
+	allowedCN string
 }
 
-func NewHandler(store *kek.KekStore, limiter *ratelimit.Limiter, allowedCN, kekVersion string) *Handler {
+func NewHandler(store *secrets.Store, limiter *ratelimit.Limiter, allowedCN string) *Handler {
 	return &Handler{
-		store:      store,
-		limiter:    limiter,
-		allowedCN:  allowedCN,
-		kekVersion: kekVersion,
+		store:     store,
+		limiter:   limiter,
+		allowedCN: allowedCN,
 	}
 }
 
-func (h *Handler) GetKEK(ctx context.Context, req *pb.GetKEKRequest) (*pb.GetKEKResponse, error) {
+func (h *Handler) GetSecret(ctx context.Context, req *pb.GetSecretRequest) (*pb.GetSecretResponse, error) {
 	cn, err := clientCN(ctx)
 	if err != nil || cn != h.allowedCN {
-		slog.Warn("kek_denied", "client_cn", cn, "reason", "cert_cn_mismatch")
+		slog.Warn("secret_denied", "client_cn", cn, "reason", "cert_cn_mismatch")
 		return nil, status.Error(codes.PermissionDenied, "permission denied")
 	}
 
 	if !h.limiter.Allow(cn) {
-		slog.Warn("kek_denied", "client_cn", cn, "reason", "rate_limit_exceeded")
+		slog.Warn("secret_denied", "client_cn", cn, "reason", "rate_limit_exceeded")
 		return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 	}
 
-	if req.Version != h.kekVersion {
-		slog.Warn("kek_denied", "client_cn", cn, "reason", "version_mismatch", "requested", req.Version)
-		return nil, status.Error(codes.InvalidArgument, "unknown version")
+	val := h.store.Get(req.Name)
+	if val == nil {
+		// Do NOT log the requested name — avoids leaking which names exist
+		slog.Warn("secret_not_found", "client_cn", cn)
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	defer zeroBytes(val)
+
+	resp := &pb.GetSecretResponse{
+		Value: append([]byte(nil), val...),
+		Name:  req.Name,
 	}
 
-	kekBytes := h.store.Get()
-	defer kek.ZeroBytes(kekBytes)
-
-	// copy into response — kekBytes is zeroed by defer; resp.Kek is a separate slice
-	resp := &pb.GetKEKResponse{
-		Kek:     append([]byte(nil), kekBytes...),
-		Version: h.kekVersion,
-	}
-
-	slog.Info("kek_served", "client_cn", cn, "version", h.kekVersion)
+	slog.Info("secret_served", "client_cn", cn, "name", req.Name)
 	return resp, nil
 }
 
 func (h *Handler) HealthCheck(_ context.Context, _ *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
 	return &pb.HealthCheckResponse{
-		KekLoaded: h.store.IsLoaded(),
-		Version:   h.kekVersion,
+		Loaded: h.store.Loaded(),
+		Count:  int32(h.store.Count()),
 	}, nil
 }
 
@@ -84,4 +81,10 @@ func clientCN(ctx context.Context) (string, error) {
 
 func certCN(cert *x509.Certificate) string {
 	return cert.Subject.CommonName
+}
+
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }

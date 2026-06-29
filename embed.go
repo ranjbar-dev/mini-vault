@@ -2,8 +2,8 @@ package minivault
 
 import _ "embed"
 
-//go:embed keys/kek.bin
-var WrappedKEK []byte
+//go:embed data/secrets.bin
+var EncryptedSecrets []byte
 
 //go:embed keys/ca.crt
 var CACert []byte

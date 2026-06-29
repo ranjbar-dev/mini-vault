@@ -11,8 +11,8 @@ import (
 	"github.com/awnumar/memguard"
 	minivault "github.com/yourorg/mini-vault"
 	"github.com/yourorg/mini-vault/internal/config"
-	"github.com/yourorg/mini-vault/internal/kek"
 	"github.com/yourorg/mini-vault/internal/ratelimit"
+	"github.com/yourorg/mini-vault/internal/secrets"
 	"github.com/yourorg/mini-vault/internal/server"
 	pb "github.com/yourorg/mini-vault/proto/minivault/v1"
 )
@@ -23,14 +23,15 @@ func main() {
 	cfg := config.Load()
 	setupLogger(cfg.LogLevel)
 
-	passphrase, err := kek.ReadPassphrase()
+	fmt.Fprint(os.Stderr, "Enter passphrase: ")
+	passphrase, err := secrets.ReadPassphrase()
+	fmt.Fprintln(os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "failed to initialise vault")
 		os.Exit(1)
 	}
 
-	store, err := kek.NewKekStore(minivault.WrappedKEK, passphrase)
-	kek.ZeroBytes(passphrase)
+	store, err := secrets.NewStore(minivault.EncryptedSecrets, passphrase)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
@@ -43,7 +44,7 @@ func main() {
 	}
 
 	limiter := ratelimit.New(cfg.RateLimitRPM, 60*time.Second)
-	handler := server.NewHandler(store, limiter, cfg.ClientCN, cfg.KEKVersion)
+	handler := server.NewHandler(store, limiter, cfg.ClientCN)
 	pb.RegisterVaultServiceServer(grpcSrv, handler)
 
 	lis, err := server.Listen(":" + cfg.Port)
@@ -52,7 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("mini-vault ready", "kek_version", cfg.KEKVersion, "port", cfg.Port)
+	slog.Info("mini-vault ready", "secrets_count", store.Count(), "port", cfg.Port)
 
 	go func() {
 		if err := grpcSrv.Serve(lis); err != nil {

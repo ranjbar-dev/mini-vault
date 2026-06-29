@@ -3,4 +3,5 @@ keys/*.key
 keys/*.pem
 keys/*.csr
 keys/*.srl
-# kek.bin is intentionally committed — do NOT add it here
+# data/secrets.json is plaintext — NEVER commit it
+data/secrets.json

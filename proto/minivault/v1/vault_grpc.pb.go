@@ -19,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	VaultService_GetKEK_FullMethodName      = "/minivault.v1.VaultService/GetKEK"
+	VaultService_GetSecret_FullMethodName   = "/minivault.v1.VaultService/GetSecret"
 	VaultService_HealthCheck_FullMethodName = "/minivault.v1.VaultService/HealthCheck"
 )
 
@@ -27,9 +27,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type VaultServiceClient interface {
-	// GetKEK returns the active KEK to an authenticated wallet-signer instance.
-	GetKEK(ctx context.Context, in *GetKEKRequest, opts ...grpc.CallOption) (*GetKEKResponse, error)
-	// HealthCheck confirms the vault is live and the KEK is loaded.
+	// GetSecret returns a named secret value to an authenticated client.
+	GetSecret(ctx context.Context, in *GetSecretRequest, opts ...grpc.CallOption) (*GetSecretResponse, error)
+	// HealthCheck confirms the vault is live and secrets are loaded.
 	HealthCheck(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error)
 }
 
@@ -41,10 +41,10 @@ func NewVaultServiceClient(cc grpc.ClientConnInterface) VaultServiceClient {
 	return &vaultServiceClient{cc}
 }
 
-func (c *vaultServiceClient) GetKEK(ctx context.Context, in *GetKEKRequest, opts ...grpc.CallOption) (*GetKEKResponse, error) {
+func (c *vaultServiceClient) GetSecret(ctx context.Context, in *GetSecretRequest, opts ...grpc.CallOption) (*GetSecretResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetKEKResponse)
-	err := c.cc.Invoke(ctx, VaultService_GetKEK_FullMethodName, in, out, cOpts...)
+	out := new(GetSecretResponse)
+	err := c.cc.Invoke(ctx, VaultService_GetSecret_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -65,9 +65,9 @@ func (c *vaultServiceClient) HealthCheck(ctx context.Context, in *HealthCheckReq
 // All implementations must embed UnimplementedVaultServiceServer
 // for forward compatibility.
 type VaultServiceServer interface {
-	// GetKEK returns the active KEK to an authenticated wallet-signer instance.
-	GetKEK(context.Context, *GetKEKRequest) (*GetKEKResponse, error)
-	// HealthCheck confirms the vault is live and the KEK is loaded.
+	// GetSecret returns a named secret value to an authenticated client.
+	GetSecret(context.Context, *GetSecretRequest) (*GetSecretResponse, error)
+	// HealthCheck confirms the vault is live and secrets are loaded.
 	HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error)
 	mustEmbedUnimplementedVaultServiceServer()
 }
@@ -79,8 +79,8 @@ type VaultServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedVaultServiceServer struct{}
 
-func (UnimplementedVaultServiceServer) GetKEK(context.Context, *GetKEKRequest) (*GetKEKResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetKEK not implemented")
+func (UnimplementedVaultServiceServer) GetSecret(context.Context, *GetSecretRequest) (*GetSecretResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSecret not implemented")
 }
 func (UnimplementedVaultServiceServer) HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HealthCheck not implemented")
@@ -96,7 +96,7 @@ type UnsafeVaultServiceServer interface {
 }
 
 func RegisterVaultServiceServer(s grpc.ServiceRegistrar, srv VaultServiceServer) {
-	// If the following call pancis, it indicates UnimplementedVaultServiceServer was
+	// If the following call panics, it indicates UnimplementedVaultServiceServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
@@ -106,25 +106,25 @@ func RegisterVaultServiceServer(s grpc.ServiceRegistrar, srv VaultServiceServer)
 	s.RegisterService(&VaultService_ServiceDesc, srv)
 }
 
-func _VaultService_GetKEK_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetKEKRequest)
+func _VaultService_GetSecret_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+	in := new(GetSecretRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(VaultServiceServer).GetKEK(ctx, in)
+		return srv.(VaultServiceServer).GetSecret(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: VaultService_GetKEK_FullMethodName,
+		FullMethod: VaultService_GetSecret_FullMethodName,
 	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(VaultServiceServer).GetKEK(ctx, req.(*GetKEKRequest))
+	handler := func(ctx context.Context, req any) (any, error) {
+		return srv.(VaultServiceServer).GetSecret(ctx, req.(*GetSecretRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _VaultService_HealthCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _VaultService_HealthCheck_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(HealthCheckRequest)
 	if err := dec(in); err != nil {
 		return nil, err
@@ -136,7 +136,7 @@ func _VaultService_HealthCheck_Handler(srv interface{}, ctx context.Context, dec
 		Server:     srv,
 		FullMethod: VaultService_HealthCheck_FullMethodName,
 	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+	handler := func(ctx context.Context, req any) (any, error) {
 		return srv.(VaultServiceServer).HealthCheck(ctx, req.(*HealthCheckRequest))
 	}
 	return interceptor(ctx, in, info, handler)
@@ -150,8 +150,8 @@ var VaultService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*VaultServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "GetKEK",
-			Handler:    _VaultService_GetKEK_Handler,
+			MethodName: "GetSecret",
+			Handler:    _VaultService_GetSecret_Handler,
 		},
 		{
 			MethodName: "HealthCheck",
