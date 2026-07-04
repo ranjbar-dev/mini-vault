@@ -90,9 +90,12 @@ putting it here; your application decodes it after receiving it.
 go run ./cmd/vault-encrypt -in data/secrets.json -out data/secrets.bin
 ```
 
-- Type a strong passphrase twice (no echo).
+- Type a strong passphrase twice (no echo). The passphrase is the only thing
+  standing between a leaked repo and your secrets — use a long, generated one.
 - `data/secrets.bin` is created. **Commit it** — it is AES-256-GCM encrypted
   and safe to store. It is useless without the passphrase.
+- **Delete `data/secrets.json` now.** The plaintext file lingering on the
+  workstation is the most likely leak in this whole system.
 
 ### 4. Build
 
@@ -111,10 +114,13 @@ scp bin/mini-vault user@vault-host:/usr/local/bin/
 
 # On the vault server — interactive passphrase prompt:
 mini-vault
-
-# Or pass the passphrase via environment variable (useful for CI/scripts):
-VAULT_PASSPHRASE=my-passphrase mini-vault
 ```
+
+For non-interactive startup, set `VAULT_PASSPHRASE` from a root-only file
+(see the systemd `EnvironmentFile` example below). **Never pass it inline on
+the command line** — `VAULT_PASSPHRASE=... mini-vault` writes the passphrase
+to your shell history, and environment variables are readable from
+`/proc/<pid>/environ` for the life of the process.
 
 Successful startup logs:
 ```json
@@ -296,6 +302,9 @@ VAULT_PASSPHRASE=test-passphrase-change-before-production ./bin/mini-vault
 
 ## Systemd unit
 
+See `deploy/mini-vault.service` for the canonical unit file (kept in sync
+with this section):
+
 ```ini
 [Unit]
 Description=mini-vault secret distribution service
@@ -312,8 +321,15 @@ LimitCORE=0
 LimitMEMLOCK=infinity
 NoNewPrivileges=true
 ProtectSystem=strict
+ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+LockPersonality=true
+RestrictNamespaces=true
+MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target
@@ -341,9 +357,12 @@ VAULT_PASSPHRASE=your-strong-passphrase
 ## Disaster recovery
 
 **Required materials:**
-1. Source code — private git repo (contains `data/secrets.bin`)
+1. Source code — private git repo (contains `data/secrets.bin` and the
+   public certs `ca.crt`, `server.crt`)
 2. Passphrase — operator's memory or password manager
-3. TLS certs — in the git repo (`ca.crt`, `server.crt`, `server.key`)
+3. `server.key` — cold storage alongside `ca.key` (private keys are
+   gitignored and must never be committed). If it is lost, generate a new
+   server cert from the CA before rebuilding.
 
 **Steps:**
 1. Provision a new server with the same firewall rules

@@ -1,18 +1,30 @@
 [Unit]
-Description=mini-vault KEK service
+Description=mini-vault secret distribution service
 After=network.target
 
 [Service]
 Type=simple
 User=vault-svc
 ExecStart=/usr/local/bin/mini-vault
+# Interactive passphrase prompt on the operator's terminal.
+# Alternative: remove these two lines and set VAULT_PASSPHRASE via
+# EnvironmentFile=/etc/mini-vault/passphrase.env (chmod 600, owned by vault-svc).
+StandardInput=tty
+TTYPath=/dev/tty
 Restart=no
 LimitCORE=0
 LimitMEMLOCK=infinity
 NoNewPrivileges=true
 ProtectSystem=strict
+ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+LockPersonality=true
+RestrictNamespaces=true
+MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target

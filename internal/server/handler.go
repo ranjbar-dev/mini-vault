@@ -32,14 +32,13 @@ func NewHandler(store *secrets.Store, limiter *ratelimit.Limiter, allowedCN stri
 }
 
 func (h *Handler) GetSecret(ctx context.Context, req *pb.GetSecretRequest) (*pb.GetSecretResponse, error) {
-	cn, err := clientCN(ctx)
-	if err != nil || cn != h.allowedCN {
-		slog.Warn("secret_denied", "client_cn", cn, "reason", "cert_cn_mismatch")
-		return nil, status.Error(codes.PermissionDenied, "permission denied")
+	cn, err := h.authorize(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	if !h.limiter.Allow(cn) {
-		slog.Warn("secret_denied", "client_cn", cn, "reason", "rate_limit_exceeded")
+		slog.Warn("request_denied", "client_cn", cn, "reason", "rate_limit_exceeded")
 		return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 	}
 
@@ -60,11 +59,26 @@ func (h *Handler) GetSecret(ctx context.Context, req *pb.GetSecretRequest) (*pb.
 	return resp, nil
 }
 
-func (h *Handler) HealthCheck(_ context.Context, _ *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
+func (h *Handler) HealthCheck(ctx context.Context, _ *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
+	if _, err := h.authorize(ctx); err != nil {
+		return nil, err
+	}
 	return &pb.HealthCheckResponse{
 		Loaded: h.store.Loaded(),
 		Count:  int32(h.store.Count()),
 	}, nil
+}
+
+// authorize verifies the peer presented a client certificate with the
+// allowed CN. Every RPC must pass this — including HealthCheck, so a
+// CA-signed cert with the wrong CN cannot probe the vault.
+func (h *Handler) authorize(ctx context.Context) (string, error) {
+	cn, err := clientCN(ctx)
+	if err != nil || cn != h.allowedCN {
+		slog.Warn("request_denied", "client_cn", cn, "reason", "cert_cn_mismatch")
+		return "", status.Error(codes.PermissionDenied, "permission denied")
+	}
+	return cn, nil
 }
 
 func clientCN(ctx context.Context) (string, error) {

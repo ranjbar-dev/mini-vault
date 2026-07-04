@@ -3,8 +3,8 @@ package secrets
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"os"
 	"sync"
@@ -15,9 +15,18 @@ import (
 )
 
 const (
-	secretsBinVersion = uint16(0x0002)
+	secretsBinVersion = uint16(0x0003)
 	headerLen         = 39 // 2+16+4+4+1+12
+
+	// Bounds for Argon2id params read from the blob header. A corrupted or
+	// tampered header must not get to choose our memory allocation — argon2
+	// runs before the GCM tag can be verified.
+	maxArgonMemKB   = uint32(4 * 1024 * 1024) // 4 GB
+	maxArgonIters   = uint32(100)
+	maxArgonThreads = uint8(64)
 )
+
+var errInvalid = errors.New("invalid secrets file")
 
 // Store holds decrypted secret values in memory.
 // All methods are safe for concurrent use.
@@ -32,11 +41,18 @@ type Store struct {
 // passphrase is zeroed before returning.
 func NewStore(data []byte, passphrase []byte) (*Store, error) {
 	if len(data) < headerLen {
-		return newStore(data, passphrase, 0, 0, 0)
+		zero(passphrase)
+		return nil, errInvalid
 	}
 	memKB := binary.BigEndian.Uint32(data[18:22])
 	iters := binary.BigEndian.Uint32(data[22:26])
 	threads := data[26]
+	if memKB == 0 || memKB > maxArgonMemKB ||
+		iters == 0 || iters > maxArgonIters ||
+		threads == 0 || threads > maxArgonThreads {
+		zero(passphrase)
+		return nil, errInvalid
+	}
 	return newStore(data, passphrase, memKB, iters, threads)
 }
 
@@ -47,7 +63,7 @@ func newStore(data []byte, passphrase []byte, memKB uint32, iters uint32, thread
 	defer zero(passphrase)
 
 	if len(data) < headerLen {
-		return nil, errors.New("invalid secrets file")
+		return nil, errInvalid
 	}
 
 	off := 0
@@ -83,19 +99,120 @@ func newStore(data []byte, passphrase []byte, memKB uint32, iters uint32, thread
 	}
 	defer zero(plaintext)
 
-	var raw map[string]string
-	if err := json.Unmarshal(plaintext, &raw); err != nil {
+	m, err := parseSecrets(plaintext)
+	if err != nil {
 		return nil, errors.New("failed to initialise vault")
 	}
 
-	m := make(map[string][]byte, len(raw))
-	for k, v := range raw {
-		b := make([]byte, len(v))
-		copy(b, v)
-		m[k] = b
+	return &Store{secrets: m, loaded: true}, nil
+}
+
+// Encrypt builds a secrets.bin blob: it derives a key from passphrase via
+// Argon2id with the given params and seals the encoded secrets with
+// AES-256-GCM under a fresh salt and nonce. Inverse of NewStore.
+// The caller retains ownership of passphrase and must zero it.
+func Encrypt(m map[string]string, passphrase []byte, memKB, iters uint32, threads uint8) ([]byte, error) {
+	for k := range m {
+		if len(k) == 0 || len(k) > 65535 {
+			return nil, errors.New("secret name length must be 1–65535 bytes")
+		}
 	}
 
-	return &Store{secrets: m, loaded: true}, nil
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+
+	key := argon2.IDKey(passphrase, salt, iters, memKB, threads, 32)
+	block, err := aes.NewCipher(key)
+	zero(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := encodePayload(m)
+	sealed := gcm.Seal(nil, nonce, payload, nil)
+	zero(payload)
+
+	hdr := make([]byte, headerLen, headerLen+len(sealed))
+	binary.BigEndian.PutUint16(hdr[0:], secretsBinVersion)
+	copy(hdr[2:], salt)
+	binary.BigEndian.PutUint32(hdr[18:], memKB)
+	binary.BigEndian.PutUint32(hdr[22:], iters)
+	hdr[26] = threads
+	copy(hdr[27:], nonce)
+	return append(hdr, sealed...), nil
+}
+
+// encodePayload serializes secrets as a length-prefixed binary payload:
+// [uint32 count] then per secret [uint16 nameLen][name][uint32 valLen][value].
+// Binary instead of JSON so decoding never creates secret values as Go
+// strings, which cannot be zeroed.
+func encodePayload(m map[string]string) []byte {
+	size := 4
+	for k, v := range m {
+		size += 2 + len(k) + 4 + len(v)
+	}
+	buf := make([]byte, 0, size)
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(m)))
+	for k, v := range m {
+		buf = binary.BigEndian.AppendUint16(buf, uint16(len(k)))
+		buf = append(buf, k...)
+		buf = binary.BigEndian.AppendUint32(buf, uint32(len(v)))
+		buf = append(buf, v...)
+	}
+	return buf
+}
+
+// parseSecrets decodes an encodePayload payload. Secret values only ever
+// exist as []byte, so every copy can be zeroed.
+func parseSecrets(plaintext []byte) (map[string][]byte, error) {
+	if len(plaintext) < 4 {
+		return nil, errInvalid
+	}
+	count := binary.BigEndian.Uint32(plaintext)
+	off := 4
+	m := make(map[string][]byte, int(min(count, 1024)))
+	fail := func() (map[string][]byte, error) {
+		for _, v := range m {
+			zero(v)
+		}
+		return nil, errInvalid
+	}
+	for range count {
+		if off+2 > len(plaintext) {
+			return fail()
+		}
+		nameLen := int(binary.BigEndian.Uint16(plaintext[off:]))
+		off += 2
+		if nameLen == 0 || off+nameLen > len(plaintext) {
+			return fail()
+		}
+		name := string(plaintext[off : off+nameLen])
+		off += nameLen
+		if off+4 > len(plaintext) {
+			return fail()
+		}
+		valLen := int(binary.BigEndian.Uint32(plaintext[off:]))
+		off += 4
+		if off+valLen > len(plaintext) {
+			return fail()
+		}
+		m[name] = append([]byte(nil), plaintext[off:off+valLen]...)
+		off += valLen
+	}
+	if off != len(plaintext) {
+		return fail()
+	}
+	return m, nil
 }
 
 // Get returns a copy of the named secret value.

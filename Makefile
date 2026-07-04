@@ -1,4 +1,4 @@
-.PHONY: proto build encrypt gentest lint test
+.PHONY: proto build encrypt gentest lint test vuln
 
 PROTO_DIR := proto/minivault/v1
 
@@ -22,3 +22,7 @@ lint:
 
 test:
 	go test -race ./...
+
+# Known-CVE scan; run in CI and before every release.
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

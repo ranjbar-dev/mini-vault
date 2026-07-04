@@ -120,8 +120,8 @@ Steps performed by `vault-encrypt`:
 4. Generate 16-byte random Argon2id salt via `crypto/rand`
 5. Derive 32-byte wrapping key via Argon2id (memory: 256MB, iterations: 3, parallelism: 2)
 6. Generate 12-byte random AES-GCM nonce via `crypto/rand`
-7. Marshal secrets to JSON bytes
-8. Encrypt JSON bytes with AES-256-GCM
+7. Encode secrets as a length-prefixed binary payload (see §3.4)
+8. Encrypt the payload with AES-256-GCM
 9. Write `data/secrets.bin`: `[version | salt | argon params | nonce | ciphertext+tag]`
 10. Zero all key material in memory before exit
 
@@ -131,7 +131,7 @@ encrypted and safe to store. It is useless without the passphrase.
 ### 3.4 Encrypted File Format (`secrets.bin`)
 
 ```
-[2 bytes  ] version prefix (0x0002)
+[2 bytes  ] version prefix (0x0003)
 [16 bytes ] Argon2id salt       (random, not secret)
 [4 bytes  ] Argon2id memory     (in KB, e.g. 262144 = 256MB)
 [4 bytes  ] Argon2id iterations
@@ -142,7 +142,21 @@ encrypted and safe to store. It is useless without the passphrase.
  39 + N bytes total (variable length)
 ```
 
-Header is exactly 39 bytes. The ciphertext is `json.Marshal(map[string]string)` + 16-byte GCM tag.
+Header is exactly 39 bytes. The Argon2id params read from the header are
+bounds-checked before use (≤4GB memory, ≤100 iterations, ≤64 threads) so a
+corrupted header cannot demand an arbitrary allocation before the GCM tag
+is verified.
+
+The plaintext inside the GCM envelope is a length-prefixed binary payload —
+**not JSON** — so decoding never materialises secret values as Go strings
+(strings cannot be zeroed):
+
+```
+[4 bytes  ] uint32 secret count
+per secret:
+  [2 bytes] uint16 name length | name bytes
+  [4 bytes] uint32 value length | value bytes
+```
 
 ### 3.5 go:embed
 
@@ -159,11 +173,12 @@ files on disk at runtime.
 After startup passphrase entry:
 
 - The wrapping key is derived and used to decrypt the secrets blob
-- The decrypted JSON is unmarshalled into `map[string][]byte`
+- The decrypted binary payload is parsed into `map[string][]byte` — all
+  values stay `[]byte` end to end; no unwipeable string copies are created
 - The map is protected in memory via a `sync.RWMutex`; individual values
   are copied out on demand and zeroed by the caller after use
 - The wrapping key and passphrase bytes are zeroed immediately after decryption
-- The AES-GCM plaintext buffer is zeroed after JSON unmarshal
+- The AES-GCM plaintext buffer is zeroed after parsing
 - No plaintext secret material ever touches the filesystem or stdout
 
 Note: individual secret values in the map are in regular heap memory (not in
@@ -258,10 +273,10 @@ Before returning any secret:
 4. Prompt operator for passphrase on stdin (no echo, single attempt)
 5. Derive 32-byte wrapping key via Argon2id using parsed salt + params
    (uses ~256MB RAM for ~1-2 seconds — one-time cost)
-6. Decrypt ciphertext with AES-256-GCM → JSON bytes
+6. Decrypt ciphertext with AES-256-GCM → binary payload
 7. Zero wrapping key and passphrase bytes immediately
-8. Unmarshal JSON → map[string][]byte
-9. Zero the JSON plaintext bytes
+8. Parse payload → map[string][]byte (values never exist as Go strings)
+9. Zero the plaintext payload bytes
 10. Load mTLS certs from go:embed into memory
 11. Start gRPC server on configured port
 12. Log "mini-vault ready" with secret count (no secret names or values in log)
@@ -361,7 +376,7 @@ names exist. It logs only the client CN.
 |-----------|----------|
 | Wrong passphrase at startup | Exit immediately, generic error, no retry |
 | Decryption failure | Exit immediately |
-| JSON unmarshal failure | Exit immediately |
+| Payload parse failure | Exit immediately |
 | Client cert CN mismatch | `PERMISSION_DENIED`, log warning |
 | Rate limit exceeded | `RESOURCE_EXHAUSTED`, log warning |
 | Secret name not found | `NOT_FOUND`, log warning (no name in log) |
@@ -381,7 +396,7 @@ Steps:
   2. Prompt operator for passphrase twice (no echo, must match)
   3. Generate random salt + nonce via crypto/rand
   4. Derive wrapping key via Argon2id (256MB, 3 iterations, 2 parallelism)
-  5. Encrypt JSON with AES-256-GCM
+  5. Encode secrets as binary payload; encrypt with AES-256-GCM
   6. Write secrets.bin: [version | salt | params | nonce | ciphertext+tag]
   7. Zero all key material before exit
 

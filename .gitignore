@@ -1,4 +1,5 @@
 bin/
+.claude/
 keys/*.key
 keys/*.pem
 keys/*.csr

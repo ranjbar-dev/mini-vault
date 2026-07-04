@@ -1,14 +1,8 @@
 package secrets
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"testing"
-
-	"golang.org/x/crypto/argon2"
 )
 
 const (
@@ -19,50 +13,7 @@ const (
 
 // buildTestBlob creates a valid secrets.bin blob using fast Argon2 params for testing.
 func buildTestBlob(passphrase []byte, m map[string]string) ([]byte, error) {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, err
-	}
-
-	key := argon2.IDKey(passphrase, salt, testIters, testMemKB, testThreads, 32)
-	defer zero(key)
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce := make([]byte, 12)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-
-	plaintext, err := json.Marshal(m)
-	if err != nil {
-		return nil, err
-	}
-	sealed := gcm.Seal(nil, nonce, plaintext, nil)
-	zero(plaintext)
-
-	header := make([]byte, headerLen)
-	off := 0
-	binary.BigEndian.PutUint16(header[off:], secretsBinVersion)
-	off += 2
-	copy(header[off:], salt)
-	off += 16
-	binary.BigEndian.PutUint32(header[off:], testMemKB)
-	off += 4
-	binary.BigEndian.PutUint32(header[off:], testIters)
-	off += 4
-	header[off] = testThreads
-	off++
-	copy(header[off:], nonce)
-
-	return append(header, sealed...), nil
+	return Encrypt(m, passphrase, testMemKB, testIters, testThreads)
 }
 
 func TestStoreRoundTrip(t *testing.T) {
@@ -97,6 +48,66 @@ func TestStoreRoundTrip(t *testing.T) {
 	defer zero(got)
 	if string(got) != "deadbeef" {
 		t.Fatalf("Get(kek) = %q, want %q", got, "deadbeef")
+	}
+}
+
+func TestNewStoreReadsParamsFromHeader(t *testing.T) {
+	blob, err := buildTestBlob([]byte("pass"), map[string]string{"k": "v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(blob, []byte("pass"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Destroy()
+	got := store.Get("k")
+	defer zero(got)
+	if string(got) != "v" {
+		t.Fatalf("Get(k) = %q, want %q", got, "v")
+	}
+}
+
+func TestNewStoreRejectsBadArgonParams(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(blob []byte)
+	}{
+		{"zero iters", func(b []byte) { binary.BigEndian.PutUint32(b[22:26], 0) }},
+		{"zero threads", func(b []byte) { b[26] = 0 }},
+		{"oversized memKB", func(b []byte) { binary.BigEndian.PutUint32(b[18:22], 0xFFFFFFFF) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blob, err := buildTestBlob([]byte("pass"), map[string]string{"k": "v"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(blob)
+			if _, err := NewStore(blob, []byte("pass")); err == nil {
+				t.Fatal("expected error for tampered Argon2 params")
+			}
+		})
+	}
+}
+
+func TestNewStoreShortData(t *testing.T) {
+	if _, err := NewStore([]byte("short"), []byte("pass")); err == nil {
+		t.Fatal("expected error on short data")
+	}
+}
+
+func TestParseSecretsRejectsMalformedPayload(t *testing.T) {
+	payload := encodePayload(map[string]string{"a": "b"})
+
+	if _, err := parseSecrets(payload[:len(payload)-1]); err == nil {
+		t.Fatal("expected error on truncated payload")
+	}
+	if _, err := parseSecrets([]byte{0, 0}); err == nil {
+		t.Fatal("expected error on payload shorter than count prefix")
+	}
+	if _, err := parseSecrets(append(payload, 0)); err == nil {
+		t.Fatal("expected error on trailing garbage")
 	}
 }
 

@@ -43,9 +43,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Cert and listener errors carry no secret material — print them as-is.
+	// Only the passphrase/decrypt path above stays generic.
 	grpcSrv, err := server.New(minivault.CACert, minivault.ServerCert, minivault.ServerKey)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to initialise vault")
+		fmt.Fprintf(os.Stderr, "tls setup: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -55,7 +57,7 @@ func main() {
 
 	lis, err := server.Listen(":" + cfg.Port)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to initialise vault")
+		fmt.Fprintf(os.Stderr, "listen: %v\n", err)
 		os.Exit(1)
 	}
 

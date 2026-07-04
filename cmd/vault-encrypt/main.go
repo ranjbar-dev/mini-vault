@@ -3,22 +3,18 @@
 package main
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 
-	"golang.org/x/crypto/argon2"
 	"golang.org/x/term"
+
+	"github.com/yourorg/mini-vault/internal/secrets"
 )
 
 const (
-	version2  = uint16(0x0002)
 	argonMem  = uint32(262144) // 256 MB in KB
 	argonIter = uint32(3)
 	argonPar  = uint8(2)
@@ -36,12 +32,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	var secrets map[string]string
-	if err := json.Unmarshal(jsonBytes, &secrets); err != nil {
+	var m map[string]string
+	if err := json.Unmarshal(jsonBytes, &m); err != nil {
 		fmt.Fprintln(os.Stderr, "invalid JSON: must be a flat map[string]string")
 		os.Exit(1)
 	}
-	if len(secrets) == 0 {
+	if len(m) == 0 {
 		fmt.Fprintln(os.Stderr, "secrets file is empty")
 		os.Exit(1)
 	}
@@ -72,71 +68,21 @@ func main() {
 	}
 	zero(pass2)
 
-	// Generate random salt
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		zero(pass1)
-		fmt.Fprintln(os.Stderr, "failed to generate salt")
-		os.Exit(1)
-	}
-
-	// Derive wrapping key via Argon2id
-	unwrap := argon2.IDKey(pass1, salt, argonIter, argonMem, argonPar, 32)
+	blob, err := secrets.Encrypt(m, pass1, argonMem, argonIter, argonPar)
 	zero(pass1)
-
-	// Encrypt JSON bytes with AES-256-GCM
-	block, err := aes.NewCipher(unwrap)
-	zero(unwrap)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "internal error")
-		os.Exit(1)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "internal error")
+		fmt.Fprintf(os.Stderr, "encrypt failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	nonce := make([]byte, 12)
-	if _, err := rand.Read(nonce); err != nil {
-		fmt.Fprintln(os.Stderr, "failed to generate nonce")
-		os.Exit(1)
-	}
-
-	// Re-marshal to canonical JSON
-	plaintext, err := json.Marshal(secrets)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "internal error")
-		os.Exit(1)
-	}
-
-	sealed := gcm.Seal(nil, nonce, plaintext, nil)
-	zero(plaintext)
-
-	// Build output: [version|salt|memKB|iters|threads|nonce|ciphertext+tag]
-	header := make([]byte, 39)
-	off := 0
-	binary.BigEndian.PutUint16(header[off:], version2)
-	off += 2
-	copy(header[off:], salt)
-	off += 16
-	binary.BigEndian.PutUint32(header[off:], argonMem)
-	off += 4
-	binary.BigEndian.PutUint32(header[off:], argonIter)
-	off += 4
-	header[off] = argonPar
-	off++
-	copy(header[off:], nonce)
-
-	out := append(header, sealed...)
-
-	if err := os.WriteFile(*outPath, out, 0600); err != nil {
+	if err := os.WriteFile(*outPath, blob, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write %s: %v\n", *outPath, err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Wrote %d bytes to %s\n", len(out), *outPath)
-	fmt.Println("data/secrets.bin is safe to commit to your private repo (encrypted).")
+	fmt.Printf("Wrote %d bytes to %s\n", len(blob), *outPath)
+	fmt.Printf("%s is safe to commit to your private repo (encrypted).\n", *outPath)
+	fmt.Printf("DELETE the plaintext input now: %s\n", *inPath)
 }
 
 func zero(b []byte) {
