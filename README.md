@@ -48,11 +48,13 @@ openssl genrsa -out keys/ca.key 4096
 openssl req -x509 -new -nodes -key keys/ca.key -sha256 -days 3650 \
     -subj "/CN=mini-vault-ca" -out keys/ca.crt
 
-# mini-vault server cert
+# mini-vault server cert — SAN is required, Go rejects CN-only certs (Go >= 1.15)
 openssl genrsa -out keys/server.key 4096
 openssl req -new -key keys/server.key -subj "/CN=mini-vault" -out keys/server.csr
+printf "subjectAltName=DNS:mini-vault,DNS:localhost,IP:127.0.0.1" > keys/server.ext
+# Edit keys/server.ext to list every hostname/IP this server will actually be dialed by.
 openssl x509 -req -in keys/server.csr -CA keys/ca.crt -CAkey keys/ca.key \
-    -CAcreateserial -days 3650 -sha256 -out keys/server.crt
+    -CAcreateserial -days 3650 -sha256 -extfile keys/server.ext -out keys/server.crt
 
 # Client cert for your application — CN must match VAULT_CLIENT_CN
 openssl genrsa -out keys/client.key 4096
@@ -177,7 +179,7 @@ your Go module at this repo), then connect with mTLS and call `GetSecret`.
 ### Install the proto package
 
 ```sh
-go get github.com/yourorg/mini-vault/proto/minivault/v1
+go get github.com/ranjbar-dev/mini-vault/proto/minivault/v1
 ```
 
 Or copy `proto/minivault/v1/*.go` directly into your project if you prefer
@@ -199,7 +201,7 @@ import (
     "google.golang.org/grpc"
     "google.golang.org/grpc/credentials"
 
-    pb "github.com/yourorg/mini-vault/proto/minivault/v1"
+    pb "github.com/ranjbar-dev/mini-vault/proto/minivault/v1"
 )
 
 func main() {

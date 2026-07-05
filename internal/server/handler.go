@@ -10,9 +10,9 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	"github.com/yourorg/mini-vault/internal/ratelimit"
-	"github.com/yourorg/mini-vault/internal/secrets"
-	pb "github.com/yourorg/mini-vault/proto/minivault/v1"
+	"github.com/ranjbar-dev/mini-vault/internal/ratelimit"
+	"github.com/ranjbar-dev/mini-vault/internal/secrets"
+	pb "github.com/ranjbar-dev/mini-vault/proto/minivault/v1"
 )
 
 // Handler implements pb.VaultServiceServer.

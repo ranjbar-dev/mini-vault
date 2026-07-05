@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package minivault.v1;
 
-option go_package = "github.com/yourorg/mini-vault/proto/minivault/v1";
+option go_package = "github.com/ranjbar-dev/mini-vault/proto/minivault/v1";
 
 service VaultService {
   // GetSecret returns a named secret value to an authenticated client.

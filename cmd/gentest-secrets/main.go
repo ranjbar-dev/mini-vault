@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yourorg/mini-vault/internal/secrets"
+	"github.com/ranjbar-dev/mini-vault/internal/secrets"
 )
 
 const testPassphrase = "test-passphrase-change-before-production"

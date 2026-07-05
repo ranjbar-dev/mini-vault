@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/awnumar/memguard"
-	minivault "github.com/yourorg/mini-vault"
-	"github.com/yourorg/mini-vault/internal/config"
-	"github.com/yourorg/mini-vault/internal/ratelimit"
-	"github.com/yourorg/mini-vault/internal/secrets"
-	"github.com/yourorg/mini-vault/internal/server"
-	pb "github.com/yourorg/mini-vault/proto/minivault/v1"
+	minivault "github.com/ranjbar-dev/mini-vault"
+	"github.com/ranjbar-dev/mini-vault/internal/config"
+	"github.com/ranjbar-dev/mini-vault/internal/ratelimit"
+	"github.com/ranjbar-dev/mini-vault/internal/secrets"
+	"github.com/ranjbar-dev/mini-vault/internal/server"
+	pb "github.com/ranjbar-dev/mini-vault/proto/minivault/v1"
 )
 
 func main() {

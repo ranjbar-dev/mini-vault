@@ -1,4 +1,4 @@
-module github.com/yourorg/mini-vault
+module github.com/ranjbar-dev/mini-vault
 
 go 1.26.4
 

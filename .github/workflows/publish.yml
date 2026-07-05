@@ -1,0 +1,38 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+      # Tags the release. Bumps patch by default; put #minor or #major
+      # in a commit message on main to bump those instead.
+      - id: tag
+        uses: anothrNick/github-tag-action@1.71.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
+
+      # Go has no package registry to upload to — pushing the tag above
+      # already makes it `go get`-able. This just nudges the module
+      # proxy/pkg.go.dev to index it immediately instead of on first fetch.
+      - if: steps.tag.outputs.new_tag != ''
+        run: curl -sf "https://proxy.golang.org/github.com/ranjbar-dev/mini-vault/@v/${{ steps.tag.outputs.new_tag }}.info"

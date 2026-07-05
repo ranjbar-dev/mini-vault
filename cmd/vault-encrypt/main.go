@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/yourorg/mini-vault/internal/secrets"
+	"github.com/ranjbar-dev/mini-vault/internal/secrets"
 )
 
 const (

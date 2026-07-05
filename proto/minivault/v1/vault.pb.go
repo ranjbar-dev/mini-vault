@@ -213,7 +213,20 @@ func (x *HealthCheckResponse) GetCount() int32 {
 var File_proto_minivault_v1_vault_proto protoreflect.FileDescriptor
 
 const file_proto_minivault_v1_vault_proto_rawDesc = "" +
-	"\n\x1eproto/minivault/v1/vault.proto\x12\fminivault.v1\"&\n\x10GetSecretRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\"=\n\x11GetSecretResponse\x12\x14\n\x05value\x18\x01 \x01(\fR\x05value\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\"\x14\n\x12HealthCheckRequest\"C\n\x13HealthCheckResponse\x12\x16\n\x06loaded\x18\x01 \x01(\bR\x06loaded\x12\x14\n\x05count\x18\x02 \x01(\x05R\x05count2\xb0\x01\n\fVaultService\x12L\n\tGetSecret\x12\x1e.minivault.v1.GetSecretRequest\x1a\x1f.minivault.v1.GetSecretResponse\x12R\n\vHealthCheck\x12 .minivault.v1.HealthCheckRequest\x1a!.minivault.v1.HealthCheckResponseB2Z0github.com/yourorg/mini-vault/proto/minivault/v1b\x06proto3"
+	"\n" +
+	"\x1eproto/minivault/v1/vault.proto\x12\fminivault.v1\"&\n" +
+	"\x10GetSecretRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"=\n" +
+	"\x11GetSecretResponse\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"\x14\n" +
+	"\x12HealthCheckRequest\"C\n" +
+	"\x13HealthCheckResponse\x12\x16\n" +
+	"\x06loaded\x18\x01 \x01(\bR\x06loaded\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\x05R\x05count2\xb0\x01\n" +
+	"\fVaultService\x12L\n" +
+	"\tGetSecret\x12\x1e.minivault.v1.GetSecretRequest\x1a\x1f.minivault.v1.GetSecretResponse\x12R\n" +
+	"\vHealthCheck\x12 .minivault.v1.HealthCheckRequest\x1a!.minivault.v1.HealthCheckResponseB6Z4github.com/ranjbar-dev/mini-vault/proto/minivault/v1b\x06proto3"
 
 var (
 	file_proto_minivault_v1_vault_proto_rawDescOnce sync.Once
@@ -254,7 +267,7 @@ func file_proto_minivault_v1_vault_proto_init() {
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
-			GoPackagePath: reflect.TypeFor[x]().PkgPath(),
+			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_minivault_v1_vault_proto_rawDesc), len(file_proto_minivault_v1_vault_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   4,
