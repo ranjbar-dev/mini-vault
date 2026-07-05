@@ -6,6 +6,12 @@ them to authenticated clients over mutually authenticated TLS (mTLS) gRPC.
 > **Run mini-vault on a separate server from the services that consume secrets.**
 > A compromise of a consumer server must not expose the secrets themselves.
 
+See [`llm.txt`](llm.txt) for a condensed, machine-oriented summary of this
+repo (architecture, gRPC contract, auth model, env vars, conventions) — it
+exists so an AI coding assistant can work on this repo without reading
+every source file first. Keep it and this README updated together whenever
+the API, auth, config, or client package changes.
+
 ---
 
 ## How it works

@@ -1,0 +1,134 @@
+# mini-vault — LLM context file
+
+Purpose: let an AI agent work productively in this repo (answer questions,
+make changes, write client code) without reading every source file first.
+Read this before exploring the codebase. If this file and the actual code
+disagree, the code wins — but treat that as a bug (see "Keeping this file
+in sync" below).
+
+## What this is
+
+A minimal Go microservice that holds a set of named secrets in memory and
+serves them to authenticated clients over mutually authenticated TLS (mTLS)
+gRPC. Not a full secrets manager (no dynamic secrets, no runtime writes, no
+HTTP/REST). Meant to run on its own server, separate from the services that
+consume the secrets, so compromising a consumer doesn't expose the vault.
+
+Module path: `github.com/ranjbar-dev/mini-vault` (Go 1.26).
+
+## Architecture
+
+```
+cmd/mini-vault/main.go       server entrypoint (reads passphrase, starts gRPC)
+cmd/vault-encrypt/main.go    CLI: data/secrets.json -> data/secrets.bin
+cmd/gentest-secrets/main.go  generates a throwaway secrets.bin for local dev/CI
+internal/config/             env var config loader
+internal/ratelimit/          per-CN sliding-window rate limiter
+internal/secrets/            AES-256-GCM + Argon2id encrypted in-memory store
+internal/server/             gRPC server setup (mTLS) + VaultService handler
+proto/minivault/v1/          protobuf service definition + generated Go code
+client/                      importable Go client package for consumers
+embed.go                     go:embed of data/secrets.bin and server TLS material
+keys/                        CA/server/client certs (*.key/*.csr gitignored, generate locally)
+data/                        secrets.bin (embedded, committed); secrets.json (plaintext, gitignored)
+```
+
+## Wire protocol: gRPC, not REST
+
+There is no HTTP/JSON API. The only interface is a gRPC service defined in
+`proto/minivault/v1/vault.proto`:
+
+```protobuf
+service VaultService {
+  rpc GetSecret(GetSecretRequest) returns (GetSecretResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+message GetSecretRequest  { string name = 1; }
+message GetSecretResponse { bytes value = 1; string name = 2; }
+message HealthCheckRequest {}
+message HealthCheckResponse { bool loaded = 1; int32 count = 2; }
+```
+
+There is no store/list/delete RPC. The vault is populated offline (via
+`vault-encrypt`) and is read-only over the wire.
+
+## Auth model
+
+Not header/bearer/API-key. Auth is **mutual TLS client-certificate CN
+matching**, enforced on every RPC in `internal/server/handler.go`:
+the server reads the CN from the client's peer certificate and rejects
+anything that doesn't equal `VAULT_CLIENT_CN` (default `vault-client`) with
+`PermissionDenied`. There is also a per-CN rate limiter (`VAULT_RATE_LIMIT_RPM`,
+default 5/60s) applied to `GetSecret` only, returning `ResourceExhausted`
+when exceeded. Unknown secret names return `NotFound`.
+
+`VAULT_PASSPHRASE` is unrelated to client/API auth — it's the server-startup
+passphrase used to Argon2id-derive the key that decrypts the embedded
+`data/secrets.bin` into memory. It never appears on the wire.
+
+## Secrets-at-rest format (server-side only)
+
+`data/secrets.bin` is a v3 binary blob: a header (version, Argon2id salt,
+Argon2id params, GCM nonce) followed by AES-256-GCM ciphertext wrapping a
+length-prefixed binary payload (`[uint32 count]` then per-entry
+`[uint16 nameLen][name][uint32 valLen][value]`) — binary instead of JSON so
+decoded secret values are `[]byte` (zeroable) rather than immutable Go
+strings. This is purely an at-rest format; it does not affect the gRPC wire
+format (`GetSecretResponse.Value` is plain `bytes`) and callers over the
+wire never need to know about it. See `internal/secrets/store.go`.
+
+## Config (env vars, see `internal/config/config.go`)
+
+| Var | Default | Meaning |
+|---|---|---|
+| `VAULT_PORT` | `9000` | gRPC listen port |
+| `VAULT_CLIENT_CN` | `vault-client` | required client cert CN |
+| `VAULT_RATE_LIMIT_RPM` | `5` | GetSecret requests per client CN per 60s |
+| `VAULT_LOG_LEVEL` | `info` | debug/info/warn/error |
+| `VAULT_PASSPHRASE` | (prompted if unset) | startup decryption passphrase |
+
+## Using it from another Go project
+
+Import `github.com/ranjbar-dev/mini-vault/client` (see `client/client.go`) —
+it wraps the mTLS dial and gRPC calls: `client.NewFromFiles(addr, serverName,
+caCertPath, clientCertPath, clientKeyPath)` or `client.New(Config{...})` with
+in-memory PEM bytes, then `c.GetSecret`/`c.GetSecretString`/`c.HealthCheck`.
+Error helpers `client.IsNotFound`/`IsPermissionDenied`/`IsRateLimited` wrap
+gRPC status codes. Full usage examples are in README.md under "Using
+mini-vault from a Go application". Don't hand-roll the TLS dial boilerplate
+in new consumer code — use this package.
+
+## Build / test
+
+```sh
+go build ./...
+go test -race ./...          # internal/ratelimit, internal/secrets, client have tests
+go run ./cmd/gentest-secrets  # generates a throwaway data/secrets.bin for local dev
+make build | make test | make lint | make vuln
+```
+
+`client/client_test.go` spins up a real in-process mTLS `VaultService` over
+`bufconn` with freshly generated ephemeral certs (does not depend on files
+under `keys/`, since `.key`/`.csr` files there are gitignored and absent on
+a fresh clone). Follow that pattern for new server-side tests that need a
+live client/server pair.
+
+## Security-sensitive conventions to preserve
+
+- Never log secret values or requested secret names on the not-found path
+  (avoids leaking which names exist) — see comments in `handler.go`.
+- Any `[]byte` holding a secret value must be zeroed after use
+  (`zero()`/`client.Zero()`); don't introduce new immutable-string copies of
+  secret material.
+- `HealthCheck` requires the same CN auth as `GetSecret` — never make it
+  auth-exempt.
+- Don't add an HTTP endpoint, a write/list RPC, or runtime secret mutation
+  without discussing it first — these are deliberate non-goals (see
+  README "What mini-vault never does").
+
+## Keeping this file in sync
+
+This file and README.md are meant to stay accurate as the code changes.
+Whenever you change routes/RPCs, auth, config env vars, the secrets file
+format, the client package's public API, or the repo layout, update both
+`llm.txt` and the relevant section of `README.md` in the same change.
