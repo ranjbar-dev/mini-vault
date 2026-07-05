@@ -173,17 +173,18 @@ message HealthCheckResponse { bool loaded = 1; int32 count = 2; }
 
 ## Using mini-vault from a Go application
 
-Copy the generated proto package from this repo into your project (or point
-your Go module at this repo), then connect with mTLS and call `GetSecret`.
+Use the `client` package — it wraps the mTLS dial and gRPC calls so you
+don't have to.
 
-### Install the proto package
+### Install
 
 ```sh
-go get github.com/ranjbar-dev/mini-vault/proto/minivault/v1
+go get github.com/ranjbar-dev/mini-vault/client
 ```
 
-Or copy `proto/minivault/v1/*.go` directly into your project if you prefer
-not to take an external dependency.
+For raw proto access instead (advanced use), `go get
+github.com/ranjbar-dev/mini-vault/proto/minivault/v1` and call
+`pb.NewVaultServiceClient` directly.
 
 ### Example client
 
@@ -192,84 +193,44 @@ package main
 
 import (
     "context"
-    "crypto/tls"
-    "crypto/x509"
     "fmt"
     "log"
-    "os"
 
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/credentials"
-
-    pb "github.com/ranjbar-dev/mini-vault/proto/minivault/v1"
+    "github.com/ranjbar-dev/mini-vault/client"
 )
 
 func main() {
-    // Load the shared CA cert that signed both the server and client certs.
-    caPEM, err := os.ReadFile("ca.crt")
+    c, err := client.NewFromFiles("vault-host:9000", "mini-vault", // ServerName must match the CN in server.crt
+        "ca.crt", "client.crt", "client.key")
     if err != nil {
         log.Fatal(err)
     }
-    caPool := x509.NewCertPool()
-    if !caPool.AppendCertsFromPEM(caPEM) {
-        log.Fatal("failed to parse CA cert")
-    }
+    defer c.Close()
 
-    // Load this application's client cert + key.
-    clientCert, err := tls.LoadX509KeyPair("client.crt", "client.key")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    creds := credentials.NewTLS(&tls.Config{
-        Certificates: []tls.Certificate{clientCert},
-        RootCAs:      caPool,
-        ServerName:   "mini-vault", // must match the CN in server.crt
-        MinVersion:   tls.VersionTLS13,
-    })
-
-    conn, err := grpc.NewClient("vault-host:9000", grpc.WithTransportCredentials(creds))
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer conn.Close()
-
-    client := pb.NewVaultServiceClient(conn)
-
-    // Fetch a secret by name.
-    resp, err := client.GetSecret(context.Background(), &pb.GetSecretRequest{
-        Name: "db_password",
-    })
+    password, err := c.GetSecretString(context.Background(), "db_password")
     if err != nil {
         log.Fatalf("GetSecret: %v", err)
     }
-
-    password := string(resp.Value)
     fmt.Println("got secret, length:", len(password))
-
-    // Zero the secret bytes after use.
-    for i := range resp.Value {
-        resp.Value[i] = 0
-    }
 }
 ```
+
+For highly sensitive values, use `c.GetSecret(ctx, name)` to get a `[]byte`
+and `client.Zero(b)` it after use — Go strings can't be zeroed.
 
 ### Fetching multiple secrets at startup
 
 ```go
-func loadSecrets(client pb.VaultServiceClient) (map[string]string, error) {
+func loadSecrets(ctx context.Context, c *client.Client) (map[string]string, error) {
     names := []string{"db_password", "api_key", "signing_key"}
     out := make(map[string]string, len(names))
 
     for _, name := range names {
-        resp, err := client.GetSecret(context.Background(), &pb.GetSecretRequest{Name: name})
+        val, err := c.GetSecretString(ctx, name)
         if err != nil {
             return nil, fmt.Errorf("fetch %q: %w", name, err)
         }
-        out[name] = string(resp.Value)
-        for i := range resp.Value {
-            resp.Value[i] = 0
-        }
+        out[name] = val
     }
     return out, nil
 }
@@ -278,11 +239,22 @@ func loadSecrets(client pb.VaultServiceClient) (map[string]string, error) {
 ### Health check
 
 ```go
-resp, err := client.HealthCheck(context.Background(), &pb.HealthCheckRequest{})
+loaded, count, err := c.HealthCheck(context.Background())
 if err != nil {
     log.Fatal(err)
 }
-fmt.Printf("vault loaded=%v secrets=%d\n", resp.Loaded, resp.Count)
+fmt.Printf("vault loaded=%v secrets=%d\n", loaded, count)
+```
+
+### Handling errors
+
+`GetSecret`/`GetSecretString` return gRPC status errors. Check them with the
+package's helpers instead of importing `grpc/status` yourself:
+
+```go
+if client.IsNotFound(err) { ... }        // unknown secret name
+if client.IsPermissionDenied(err) { ... } // client cert CN not allowed
+if client.IsRateLimited(err) { ... }      // VAULT_RATE_LIMIT_RPM exceeded
 ```
 
 ---
