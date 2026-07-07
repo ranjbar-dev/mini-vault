@@ -32,7 +32,7 @@ var errInvalid = errors.New("invalid secrets file")
 // All methods are safe for concurrent use.
 type Store struct {
 	mu      sync.RWMutex
-	secrets map[string][]byte
+	secrets map[string]*memguard.LockedBuffer
 	loaded  bool
 }
 
@@ -172,18 +172,19 @@ func encodePayload(m map[string]string) []byte {
 	return buf
 }
 
-// parseSecrets decodes an encodePayload payload. Secret values only ever
-// exist as []byte, so every copy can be zeroed.
-func parseSecrets(plaintext []byte) (map[string][]byte, error) {
+// parseSecrets decodes an encodePayload payload. Each value is copied into a
+// memguard.LockedBuffer (locked, non-swappable, zeroed on Destroy) so no
+// plaintext secret value lives in ordinary GC-managed memory.
+func parseSecrets(plaintext []byte) (map[string]*memguard.LockedBuffer, error) {
 	if len(plaintext) < 4 {
 		return nil, errInvalid
 	}
 	count := binary.BigEndian.Uint32(plaintext)
 	off := 4
-	m := make(map[string][]byte, int(min(count, 1024)))
-	fail := func() (map[string][]byte, error) {
+	m := make(map[string]*memguard.LockedBuffer, int(min(count, 1024)))
+	fail := func() (map[string]*memguard.LockedBuffer, error) {
 		for _, v := range m {
-			zero(v)
+			v.Destroy()
 		}
 		return nil, errInvalid
 	}
@@ -206,7 +207,8 @@ func parseSecrets(plaintext []byte) (map[string][]byte, error) {
 		if off+valLen > len(plaintext) {
 			return fail()
 		}
-		m[name] = append([]byte(nil), plaintext[off:off+valLen]...)
+		buf := memguard.NewBufferFromBytes(plaintext[off : off+valLen])
+		m[name] = buf
 		off += valLen
 	}
 	if off != len(plaintext) {
@@ -224,8 +226,8 @@ func (s *Store) Get(name string) []byte {
 	if !ok {
 		return nil
 	}
-	dst := make([]byte, len(v))
-	copy(dst, v)
+	dst := make([]byte, v.Size())
+	copy(dst, v.Bytes())
 	return dst
 }
 
@@ -252,7 +254,7 @@ func (s *Store) Destroy() {
 	}
 	s.loaded = false
 	for k, v := range s.secrets {
-		zero(v)
+		v.Destroy()
 		delete(s.secrets, k)
 	}
 }
