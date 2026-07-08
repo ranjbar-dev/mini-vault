@@ -1,0 +1,43 @@
+name: Proto Check
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Pinned per PRD.md §12 — bump these together, deliberately, never via
+  # @latest, so proto drift is caught against a known-good toolchain.
+  PROTOC_VERSION: "6.33.0"
+  PROTOC_GEN_GO_VERSION: "v1.36.10"
+  PROTOC_GEN_GO_GRPC_VERSION: "v1.5.1"
+
+jobs:
+  proto-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install pinned protoc
+        run: |
+          curl -sSL -o protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -o protoc.zip -d /usr/local
+          rm protoc.zip
+          protoc --version
+
+      - name: Install pinned protoc-gen-go / protoc-gen-go-grpc
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Regenerate proto and fail on drift
+        run: |
+          make proto
+          git diff --exit-code -- proto/minivault/v1/vault.pb.go proto/minivault/v1/vault_grpc.pb.go
