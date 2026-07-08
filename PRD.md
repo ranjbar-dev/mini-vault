@@ -181,10 +181,10 @@ After startup passphrase entry:
 - The AES-GCM plaintext buffer is zeroed after parsing
 - No plaintext secret material ever touches the filesystem or stdout
 
-Note: individual secret values in the map are in regular heap memory (not in
-individual memguard buffers), which is an accepted trade-off for simplicity.
-The unwrapping key is stored in a `memguard.LockedBuffer` until decryption
-is complete, then destroyed.
+Note: each secret value is held in its own `memguard.LockedBuffer`
+(`internal/secrets/store.go`), not regular heap memory — the map holds one
+locked buffer per name. The unwrapping key is likewise stored in a
+`memguard.LockedBuffer` until decryption is complete, then destroyed.
 
 ---
 
@@ -283,8 +283,14 @@ Before returning any secret:
 13. Serve GetSecret / HealthCheck requests indefinitely
 ```
 
-If any step fails, the process exits immediately with a non-zero code and a
-generic error message. It does not retry or prompt again.
+If any step on the secret-material path (steps 2-9: loading, parsing, or
+decrypting the secrets blob) fails, the process exits immediately with a
+non-zero code and a generic error message — no crypto/parsing detail is
+printed, since it could hint at the secret material. TLS-cert setup (step
+10) and listener bind (step 11) failures are not on that path and print
+their real underlying error, by design (`cmd/mini-vault/main.go`) — neither
+carries secret material, and the detail is more useful operationally than a
+generic message would be. Nothing retries or prompts again.
 
 ---
 
@@ -360,8 +366,8 @@ Example log lines:
 ```json
 {"time":"...","level":"INFO","msg":"mini-vault ready","secrets_count":3,"port":"9000"}
 {"time":"...","level":"INFO","msg":"secret_served","client_cn":"vault-client","name":"db_password"}
-{"time":"...","level":"WARN","msg":"secret_denied","client_cn":"unknown","reason":"cert_cn_mismatch"}
-{"time":"...","level":"WARN","msg":"secret_denied","client_cn":"vault-client","reason":"rate_limit_exceeded"}
+{"time":"...","level":"WARN","msg":"request_denied","client_cn":"unknown","reason":"cert_cn_mismatch"}
+{"time":"...","level":"WARN","msg":"request_denied","client_cn":"vault-client","reason":"rate_limit_exceeded"}
 {"time":"...","level":"WARN","msg":"secret_not_found","client_cn":"vault-client"}
 ```
 
@@ -497,6 +503,7 @@ go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault
 | `google.golang.org/grpc` | gRPC server |
 | `google.golang.org/protobuf` | Proto serialization |
 | `golang.org/x/crypto` | Argon2id key derivation |
+| `golang.org/x/term` | No-echo passphrase prompt on stdin |
 | stdlib only for everything else | slog, crypto/aes, crypto/cipher, crypto/rand, encoding/json |
 
 ---
@@ -529,17 +536,26 @@ go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault
 ## 16. Disaster Recovery
 
 **Required materials:**
-1. Source code → private git repo (contains `data/secrets.bin`)
+1. Source code → private git repo (contains `data/secrets.bin` and the
+   public certs `ca.crt`, `server.crt`)
 2. Passphrase → operator memory / password manager
-3. TLS certs → git repo (`ca.crt`, `server.crt`, `server.key`)
+3. `server.key` → cold storage alongside `ca.key`, **not** the git repo:
+   `keys/*.key` is gitignored and private keys must never be committed. A
+   bare clone is missing this file, and `go build` fails immediately —
+   `embed.go` embeds `keys/server.key` via `go:embed`, so the key material
+   must be restored from cold storage before the module builds at all. If
+   `server.key` itself is lost, generate a new server cert from the CA
+   before rebuilding.
 
 **Recovery steps:**
 1. Provision new server with same firewall rules
 2. Clone private git repo
-3. `go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault`
-4. Deploy binary; start; enter passphrase (or set `VAULT_PASSPHRASE`)
-5. Verify `HealthCheck` returns `loaded: true`
-6. Update firewall rules if server IP changed
+3. Restore `keys/server.key` (and `keys/ca.key`, if regenerating certs) from
+   cold storage into the cloned repo
+4. `go build -ldflags="-s -w" -o bin/mini-vault ./cmd/mini-vault`
+5. Deploy binary; start; enter passphrase (or set `VAULT_PASSPHRASE`)
+6. Verify `HealthCheck` returns `loaded: true`
+7. Update firewall rules if server IP changed
 
 **If the passphrase is lost:** `data/secrets.bin` cannot be decrypted. Edit
 `data/secrets.json` with the original values (from other secure storage),
