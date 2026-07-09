@@ -68,17 +68,18 @@ func New(cfg Config) (*Client, error) {
 }
 
 // NewFromFiles reads PEM material from disk and dials, per the layout
-// produced by the "First-time setup" steps in README.md.
+// produced by the "First-time setup" steps in README.md. Paths are supplied
+// by the calling application's own source/config, not by network input.
 func NewFromFiles(addr, serverName, caCertPath, clientCertPath, clientKeyPath string) (*Client, error) {
-	caCert, err := os.ReadFile(caCertPath)
+	caCert, err := os.ReadFile(caCertPath) // #nosec G304 -- path is caller-supplied local config, not attacker-controlled
 	if err != nil {
 		return nil, fmt.Errorf("read ca cert: %w", err)
 	}
-	clientCert, err := os.ReadFile(clientCertPath)
+	clientCert, err := os.ReadFile(clientCertPath) // #nosec G304 -- path is caller-supplied local config, not attacker-controlled
 	if err != nil {
 		return nil, fmt.Errorf("read client cert: %w", err)
 	}
-	clientKey, err := os.ReadFile(clientKeyPath)
+	clientKey, err := os.ReadFile(clientKeyPath) // #nosec G304 -- path is caller-supplied local config, not attacker-controlled
 	if err != nil {
 		return nil, fmt.Errorf("read client key: %w", err)
 	}

@@ -65,7 +65,7 @@ func (h *Handler) HealthCheck(ctx context.Context, _ *pb.HealthCheckRequest) (*p
 	}
 	return &pb.HealthCheckResponse{
 		Loaded: h.store.Loaded(),
-		Count:  int32(h.store.Count()),
+		Count:  int32(h.store.Count()), // #nosec G115 -- secret count is build-time/operator-controlled (data/secrets.json entries), never realistically near int32 max
 	}, nil
 }
 
