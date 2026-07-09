@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"math"
 	"os"
 	"sync"
 
@@ -112,9 +113,12 @@ func newStore(data []byte, passphrase []byte, memKB uint32, iters uint32, thread
 // AES-256-GCM under a fresh salt and nonce. Inverse of NewStore.
 // The caller retains ownership of passphrase and must zero it.
 func Encrypt(m map[string]string, passphrase []byte, memKB, iters uint32, threads uint8) ([]byte, error) {
-	for k := range m {
-		if len(k) == 0 || len(k) > 65535 {
-			return nil, errors.New("secret name length must be 1–65535 bytes")
+	for k, v := range m {
+		if err := validateNameLen(len(k)); err != nil {
+			return nil, err
+		}
+		if err := validateValueLen(len(v)); err != nil {
+			return nil, err
 		}
 	}
 
@@ -152,21 +156,46 @@ func Encrypt(m map[string]string, passphrase []byte, memKB, iters uint32, thread
 	return append(hdr, sealed...), nil
 }
 
+// validateNameLen enforces the name-length bound implied by the uint16
+// nameLen prefix in the wire format (§3.4): a name of 0 or >65535 bytes
+// cannot round-trip through that field without truncation.
+func validateNameLen(n int) error {
+	if n == 0 || n > 65535 {
+		return errors.New("secret name length must be 1–65535 bytes")
+	}
+	return nil
+}
+
+// validateValueLen enforces the value-length bound implied by the uint32
+// valLen prefix in the wire format (§3.4): a value longer than
+// math.MaxUint32 bytes would silently wrap when narrowed to uint32,
+// corrupting the encoded payload rather than failing loudly.
+func validateValueLen(n int) error {
+	if n < 0 || n > math.MaxUint32 {
+		return errors.New("secret value length must be at most 4294967295 bytes")
+	}
+	return nil
+}
+
 // encodePayload serializes secrets as a length-prefixed binary payload:
 // [uint32 count] then per secret [uint16 nameLen][name][uint32 valLen][value].
 // Binary instead of JSON so decoding never creates secret values as Go
 // strings, which cannot be zeroed.
+//
+// Callers must go through Encrypt, which validates every name/value length
+// against validateNameLen/validateValueLen before reaching here — the casts
+// below cannot truncate given that precondition.
 func encodePayload(m map[string]string) []byte {
 	size := 4
 	for k, v := range m {
 		size += 2 + len(k) + 4 + len(v)
 	}
 	buf := make([]byte, 0, size)
-	buf = binary.BigEndian.AppendUint32(buf, uint32(len(m)))
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(m))) // #nosec G115 -- map cardinality can't realistically approach uint32 max (would require billions of in-memory entries)
 	for k, v := range m {
-		buf = binary.BigEndian.AppendUint16(buf, uint16(len(k)))
+		buf = binary.BigEndian.AppendUint16(buf, uint16(len(k))) // #nosec G115 -- len(k) bounds-checked by validateNameLen in Encrypt
 		buf = append(buf, k...)
-		buf = binary.BigEndian.AppendUint32(buf, uint32(len(v)))
+		buf = binary.BigEndian.AppendUint32(buf, uint32(len(v))) // #nosec G115 -- len(v) bounds-checked by validateValueLen in Encrypt
 		buf = append(buf, v...)
 	}
 	return buf

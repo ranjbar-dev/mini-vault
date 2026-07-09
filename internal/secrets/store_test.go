@@ -2,6 +2,8 @@ package secrets
 
 import (
 	"encoding/binary"
+	"math"
+	"strings"
 	"testing"
 )
 
@@ -177,6 +179,58 @@ func TestStoreGetReturnsCopy(t *testing.T) {
 	}
 	if &got1[0] == &got2[0] {
 		t.Fatal("Get should return independent copies")
+	}
+}
+
+// TestEncryptRejectsOversizedName covers the existing name-length bound
+// (1-65535 bytes, per the uint16 nameLen prefix in the wire format) that
+// Encrypt has always enforced but that had no direct test.
+func TestEncryptRejectsOversizedName(t *testing.T) {
+	if _, err := buildTestBlob([]byte("pass"), map[string]string{"": "v"}); err == nil {
+		t.Fatal("expected error for empty secret name")
+	}
+	oversized := strings.Repeat("a", 65536)
+	if _, err := buildTestBlob([]byte("pass"), map[string]string{oversized: "v"}); err == nil {
+		t.Fatal("expected error for name longer than 65535 bytes")
+	}
+}
+
+// TestValidateValueLen guards the fix for a latent integer-truncation bug:
+// encodePayload narrows len(v) to uint32 for the valLen wire-format prefix
+// (§3.4) with no bound check, so a value longer than math.MaxUint32 bytes
+// would silently wrap instead of failing loudly, corrupting the encoded
+// payload. Before this fix, validateValueLen did not exist at all, so this
+// test could not even compile against the pre-fix code — the strongest
+// possible "fails without the fix" guarantee for a check whose triggering
+// input (>4GiB) is too large to construct in a real Encrypt() call in a
+// unit test.
+func TestValidateValueLen(t *testing.T) {
+	if err := validateValueLen(0); err != nil {
+		t.Fatalf("validateValueLen(0) = %v, want nil", err)
+	}
+	if err := validateValueLen(math.MaxUint32); err != nil {
+		t.Fatalf("validateValueLen(math.MaxUint32) = %v, want nil", err)
+	}
+	if err := validateValueLen(math.MaxUint32 + 1); err == nil {
+		t.Fatal("validateValueLen(math.MaxUint32+1) = nil, want error")
+	}
+	if err := validateValueLen(-1); err == nil {
+		t.Fatal("validateValueLen(-1) = nil, want error")
+	}
+}
+
+func TestValidateNameLen(t *testing.T) {
+	if err := validateNameLen(0); err == nil {
+		t.Fatal("validateNameLen(0) = nil, want error")
+	}
+	if err := validateNameLen(1); err != nil {
+		t.Fatalf("validateNameLen(1) = %v, want nil", err)
+	}
+	if err := validateNameLen(65535); err != nil {
+		t.Fatalf("validateNameLen(65535) = %v, want nil", err)
+	}
+	if err := validateNameLen(65536); err == nil {
+		t.Fatal("validateNameLen(65536) = nil, want error")
 	}
 }
 
