@@ -155,7 +155,7 @@ func TestClientGetSecretAndHealthCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -197,7 +197,7 @@ func TestClientWrongCNIsPermissionDenied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if _, err := c.GetSecret(context.Background(), "k"); !IsPermissionDenied(err) {
 		t.Fatalf("expected PermissionDenied for mismatched CN, got %v", err)
